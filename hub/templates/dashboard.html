@@ -1,0 +1,241 @@
+{% extends "base.html" %}
+{% set active = "dashboard" %}
+
+{% block title %}Dashboard — OpenClaw Hub{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Dashboard</h1>
+
+<!-- Kanban Board -->
+<div class="kanban">
+
+    <!-- Draft (needs approval) -->
+    <div class="kanban-column col-draft">
+        <div class="kanban-header">
+            <span class="col-title">Draft</span>
+            <span class="col-count">{{ data.draft_tasks|length }}</span>
+        </div>
+        {% for t in data.draft_tasks %}
+        <div class="kanban-card">
+            <a class="card-link" href="/tasks/{{ t.id }}">#{{ t.id }} {{ t.title[:50] }}{% if t.title|length > 50 %}…{% endif %}</a>
+            <div class="card-meta">
+                {% if t.assigned_agent %}from {{ t.assigned_agent }}{% endif %}
+                <span class="badge badge-{{ t.runtime.value }}">{{ t.runtime.value }}</span>
+            </div>
+            <div class="card-actions">
+                <form method="post" action="/tasks/{{ t.id }}/web-approve" style="display:inline">
+                    <input type="hidden" name="run" value="true">
+                    <button class="btn btn-success btn-xs" type="submit">Approve & Run</button>
+                </form>
+                <form method="post" action="/tasks/{{ t.id }}/web-approve" style="display:inline">
+                    <button class="btn btn-primary btn-xs" type="submit">Approve</button>
+                </form>
+                <form method="post" action="/tasks/{{ t.id }}/web-reject" style="display:inline">
+                    <button class="btn btn-danger btn-xs" type="submit">Reject</button>
+                </form>
+            </div>
+        </div>
+        {% else %}
+        <div class="empty" style="padding:20px">No drafts</div>
+        {% endfor %}
+    </div>
+
+    <!-- Open (backlog) -->
+    {% set open_tasks = data.active_tasks|selectattr("status.value", "equalto", "open")|list %}
+    <div class="kanban-column col-open">
+        <div class="kanban-header">
+            <span class="col-title">Open</span>
+            <span class="col-count">{{ open_tasks|length }}</span>
+        </div>
+        {% for t in open_tasks[:8] %}
+        <div class="kanban-card">
+            <a class="card-link" href="/tasks/{{ t.id }}">#{{ t.id }} {{ t.title[:40] }}{% if t.title|length > 40 %}…{% endif %}</a>
+            <div class="card-meta">
+                <span class="badge badge-{{ t.runtime.value }}">{{ t.runtime.value }}</span>
+            </div>
+            <div class="card-actions">
+                <form method="post" action="/tasks/{{ t.id }}/web-start" style="display:inline">
+                    <button class="btn btn-primary btn-xs" type="submit">Start</button>
+                </form>
+            </div>
+        </div>
+        {% else %}
+        <div class="empty" style="padding:20px">No open tasks</div>
+        {% endfor %}
+        {% if open_tasks|length > 8 %}
+        <a href="/tasks?status=open" style="display:block;text-align:center;font-size:12px;padding:8px;color:var(--text-muted)">+{{ open_tasks|length - 8 }} more →</a>
+        {% endif %}
+    </div>
+
+    <!-- Running -->
+    {% set running_tasks = data.active_tasks|selectattr("status.value", "equalto", "running")|list %}
+    <div class="kanban-column col-running">
+        <div class="kanban-header">
+            <span class="col-title">Running</span>
+            <span class="col-count">{{ running_tasks|length }}</span>
+        </div>
+        {% for t in running_tasks[:8] %}
+        <div class="kanban-card">
+            <a class="card-link" href="/tasks/{{ t.id }}">#{{ t.id }} {{ t.title[:40] }}{% if t.title|length > 40 %}…{% endif %}</a>
+            <div class="card-meta">
+                <span class="badge badge-{{ t.runtime.value }}">{{ t.runtime.value }}</span>
+                {% if t.job_id %}<code style="font-size:10px">{{ t.job_id[:12] }}…</code>{% endif %}
+            </div>
+        </div>
+        {% else %}
+        <div class="empty" style="padding:20px">No running tasks</div>
+        {% endfor %}
+        {% if running_tasks|length > 8 %}
+        <a href="/tasks?status=running" style="display:block;text-align:center;font-size:12px;padding:8px;color:var(--text-muted)">+{{ running_tasks|length - 8 }} more →</a>
+        {% endif %}
+    </div>
+
+    <!-- Review -->
+    <div class="kanban-column col-review">
+        <div class="kanban-header">
+            <span class="col-title">Review</span>
+            <span class="col-count">{{ data.review_tasks|length }}</span>
+        </div>
+        {% for t in data.review_tasks[:8] %}
+        <div class="kanban-card">
+            <a class="card-link" href="/tasks/{{ t.id }}">#{{ t.id }} {{ t.title[:40] }}{% if t.title|length > 40 %}…{% endif %}</a>
+            <div class="card-meta">
+                <span class="badge badge-review">review</span>
+                cycle {{ t.review_cycle + 1 }}/{{ 3 }}
+                {% if t.review_job_id %}<code style="font-size:10px">{{ t.review_job_id[:12] }}…</code>{% endif %}
+            </div>
+        </div>
+        {% else %}
+        <div class="empty" style="padding:20px">No reviews</div>
+        {% endfor %}
+        {% if data.review_tasks|length > 8 %}
+        <a href="/tasks?status=review" style="display:block;text-align:center;font-size:12px;padding:8px;color:var(--text-muted)">+{{ data.review_tasks|length - 8 }} more →</a>
+        {% endif %}
+    </div>
+
+    <!-- Decision (after arbiter) -->
+    <div class="kanban-column col-decision">
+        <div class="kanban-header">
+            <span class="col-title">Decision</span>
+            <span class="col-count">{{ data.needs_decision_tasks|length }}</span>
+        </div>
+        {% for t in data.needs_decision_tasks[:8] %}
+        <div class="kanban-card">
+            <a class="card-link" href="/tasks/{{ t.id }}">#{{ t.id }} {{ t.title[:40] }}{% if t.title|length > 40 %}…{% endif %}</a>
+            <div class="card-meta" style="color:var(--red)">Arbiter report ready</div>
+            <div class="card-actions">
+                <form method="post" action="/tasks/{{ t.id }}/web-decide" style="display:inline">
+                    <input type="hidden" name="action" value="accept">
+                    <button class="btn btn-success btn-xs" type="submit">Accept</button>
+                </form>
+                <a href="/tasks/{{ t.id }}" class="btn btn-warning btn-xs">Review</a>
+            </div>
+        </div>
+        {% else %}
+        <div class="empty" style="padding:20px">No decisions needed</div>
+        {% endfor %}
+    </div>
+
+    <!-- Needs Info -->
+    <div class="kanban-column col-needs_info">
+        <div class="kanban-header">
+            <span class="col-title">Needs Info</span>
+            <span class="col-count">{{ data.needs_info_tasks|length }}</span>
+        </div>
+        {% for t in data.needs_info_tasks %}
+        <div class="kanban-card">
+            <a class="card-link" href="/tasks/{{ t.id }}">#{{ t.id }} {{ t.title[:50] }}{% if t.title|length > 50 %}…{% endif %}</a>
+            <div class="card-meta" style="color:var(--yellow)">Agent has a question</div>
+            <div class="card-actions">
+                <a href="/tasks/{{ t.id }}" class="btn btn-warning btn-xs">Answer</a>
+            </div>
+        </div>
+        {% else %}
+        <div class="empty" style="padding:20px">No questions</div>
+        {% endfor %}
+    </div>
+
+</div>
+
+<div class="cards">
+    <!-- Quick Task -->
+    <div class="card">
+        <div class="card-title">New Task</div>
+        <form method="post" action="/tasks/create">
+            <div class="form-group">
+                <label>Title</label>
+                <input type="text" name="title" required placeholder="e.g. Fix cart processing for edge case">
+            </div>
+            <div class="form-group">
+                <label>Description</label>
+                <textarea name="description" placeholder="Optional details…" style="min-height:60px"></textarea>
+            </div>
+            <div class="form-inline" style="margin-bottom:12px">
+                <div class="form-group">
+                    <label>Runtime</label>
+                    <select name="runtime">
+                        <option value="auto">Auto</option>
+                        <option value="openrouter">OpenRouter</option>
+                        <option value="vast">Vast.ai</option>
+                    </select>
+                </div>
+                <div style="display:flex;gap:8px">
+                    <button class="btn btn-primary" type="submit" name="run_immediately" value="">To Backlog</button>
+                    <button class="btn btn-success" type="submit" name="run_immediately" value="on">Run Now</button>
+                </div>
+            </div>
+        </form>
+    </div>
+
+    <!-- Recent Commits -->
+    <div class="card">
+        <div class="card-title">Recent Commits</div>
+        {% if data.recent_commits %}
+        <ul class="item-list">
+            {% for c in data.recent_commits[:5] %}
+            <li>
+                <code>{{ c.sha }}</code> {{ c.message.split('\n')[0][:80] }}
+                <div class="meta">{{ c.author }} &middot; {{ c.date[:10] if c.date else '' }}</div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <div class="empty">Could not fetch commits</div>
+        {% endif %}
+    </div>
+
+    <!-- Open PRs -->
+    <div class="card">
+        <div class="card-title">Open Pull Requests</div>
+        {% if data.open_prs %}
+        <ul class="item-list">
+            {% for pr in data.open_prs %}
+            <li>
+                <a href="{{ pr.url }}" target="_blank">#{{ pr.number }} {{ pr.title }}</a>
+                <div class="meta">{{ pr.headRefName }} &middot; {{ pr.createdAt[:10] if pr.createdAt else '' }}</div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <div class="empty">No open PRs</div>
+        {% endif %}
+    </div>
+
+    <!-- Decisions -->
+    <div class="card">
+        <div class="card-title">Recent Decisions</div>
+        {% if data.recent_decisions %}
+        <ul class="item-list">
+            {% for d in data.recent_decisions[:5] %}
+            <li>
+                <strong>{{ d.title if d.title else 'Decision' }}</strong>
+                <div class="meta">{{ (d.content or d.decision or '')[:120] }}</div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <div class="empty">No decisions recorded</div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% set active = "tasks" %}
+
+{% block title %}Tasks — OpenClaw Hub{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Tasks</h1>
+
+{% if tasks %}
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>#</th>
+            <th>Title</th>
+            <th>Status</th>
+            <th>Source</th>
+            <th>Runtime</th>
+            <th>Created</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for t in tasks %}
+        <tr>
+            <td>{{ t.id }}</td>
+            <td><a href="/tasks/{{ t.id }}">{{ t.title[:60] }}{% if t.title|length > 60 %}…{% endif %}</a></td>
+            <td><span class="badge badge-{{ t.status.value }}">{{ t.status.value }}</span></td>
+            <td><span class="badge badge-{{ t.source.value }}">{{ t.source.value }}</span></td>
+            <td><span class="badge badge-{{ t.runtime.value }}">{{ t.runtime.value }}</span></td>
+            <td>{{ t.created_at }}</td>
+            <td>
+                {% if t.status.value == 'draft' %}
+                <form method="post" action="/tasks/{{ t.id }}/web-approve" style="display:inline">
+                    <input type="hidden" name="run" value="true">
+                    <button class="btn btn-success btn-xs" type="submit">Approve</button>
+                </form>
+                <form method="post" action="/tasks/{{ t.id }}/web-reject" style="display:inline">
+                    <button class="btn btn-danger btn-xs" type="submit">Reject</button>
+                </form>
+                {% elif t.status.value == 'open' %}
+                <form method="post" action="/tasks/{{ t.id }}/web-start" style="display:inline">
+                    <button class="btn btn-primary btn-xs" type="submit">Start</button>
+                </form>
+                {% elif t.status.value == 'needs_info' %}
+                <a href="/tasks/{{ t.id }}" class="btn btn-warning btn-xs">Answer</a>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<div class="empty">No tasks yet. Create one from the Dashboard.</div>
+{% endif %}
+
+<a href="/" class="btn btn-primary">← Dashboard</a>
+{% endblock %}

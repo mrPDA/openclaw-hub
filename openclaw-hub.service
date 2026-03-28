@@ -1,0 +1,23 @@
+[Unit]
+Description=OpenClaw Hub — agent task management dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=denis
+WorkingDirectory=/home/denis/services/openclaw-hub
+ExecStart=/home/denis/services/openclaw-hub/.venv/bin/python -m uvicorn hub.app:app --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=5
+
+Environment=OPENCLAW_HUB_HOME=/home/denis
+Environment=OPENCLAW_HUB_REPO=mrPDA/vkuswill_bot
+Environment=OPENCLAW_HUB_PORT=8080
+Environment=OPENCLAW_HUB_DB=/home/denis/.local/state/openclaw-hub/hub.db
+Environment=OPENCLAW_DISPATCH_BIN=/home/denis/.local/bin/oc-dev-dispatch
+Environment=OPENCLAW_N4L_BIN=/home/denis/.local/bin/n4l
+Environment=GH_BIN=/usr/bin/gh
+Environment=PATH=/home/denis/.local/bin:/home/denis/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target
