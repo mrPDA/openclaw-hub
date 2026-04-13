@@ -10,15 +10,17 @@ VENV="$INSTALL_DIR/.venv"
 echo "==> Installing to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 cp -r hub pyproject.toml "$INSTALL_DIR/"
+if [ -f openclaw-hub.service ]; then
+    cp openclaw-hub.service "$INSTALL_DIR/"
+fi
 
 echo "==> Setting up venv"
 if [ ! -d "$VENV" ]; then
-    python3 -m venv "$VENV"
+    uv venv "$VENV"
 fi
 
 echo "==> Installing dependencies"
-"$VENV/bin/pip" install --upgrade pip
-"$VENV/bin/pip" install -e "$INSTALL_DIR"
+uv pip install -e "$INSTALL_DIR" --python "$VENV/bin/python"
 
 echo "==> Installing CLI links"
 mkdir -p "$HOME/.local/bin"
@@ -27,7 +29,7 @@ ln -sf "$VENV/bin/openclaw-hub" "$HOME/.local/bin/openclaw-hub"
 ln -sf "$VENV/bin/openclaw-hub-mcp" "$HOME/.local/bin/openclaw-hub-mcp"
 
 echo "==> Installing systemd service"
-sudo cp openclaw-hub.service /etc/systemd/system/
+sudo cp "$INSTALL_DIR/openclaw-hub.service" /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable openclaw-hub.service
 sudo systemctl restart openclaw-hub.service
