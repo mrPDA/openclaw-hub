@@ -4,54 +4,70 @@
 {% block title %}Tasks — OpenClaw Hub{% endblock %}
 
 {% block content %}
-<h1 class="page-title">Tasks</h1>
+<header class="page-header">
+    <h1 class="page-title">Tasks</h1>
+</header>
 
-{% if tasks %}
-<table class="data-table">
-    <thead>
-        <tr>
-            <th>#</th>
-            <th>Title</th>
-            <th>Status</th>
-            <th>Source</th>
-            <th>Runtime</th>
-            <th>Created</th>
-            <th>Actions</th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for t in tasks %}
-        <tr>
-            <td>{{ t.id }}</td>
-            <td><a href="/tasks/{{ t.id }}">{{ t.title[:60] }}{% if t.title|length > 60 %}…{% endif %}</a></td>
-            <td><span class="badge badge-{{ t.status.value }}">{{ t.status.value }}</span></td>
-            <td><span class="badge badge-{{ t.source.value }}">{{ t.source.value }}</span></td>
-            <td><span class="badge badge-{{ t.runtime.value }}">{{ t.runtime.value }}</span></td>
-            <td>{{ t.created_at }}</td>
-            <td>
-                {% if t.status.value == 'draft' %}
-                <form method="post" action="/tasks/{{ t.id }}/web-approve" style="display:inline">
-                    <input type="hidden" name="run" value="true">
-                    <button class="btn btn-success btn-xs" type="submit">Approve</button>
-                </form>
-                <form method="post" action="/tasks/{{ t.id }}/web-reject" style="display:inline">
-                    <button class="btn btn-danger btn-xs" type="submit">Reject</button>
-                </form>
-                {% elif t.status.value == 'open' %}
-                <form method="post" action="/tasks/{{ t.id }}/web-start" style="display:inline">
-                    <button class="btn btn-primary btn-xs" type="submit">Start</button>
-                </form>
-                {% elif t.status.value == 'needs_info' %}
-                <a href="/tasks/{{ t.id }}" class="btn btn-warning btn-xs">Answer</a>
-                {% endif %}
-            </td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
-{% else %}
-<div class="empty">No tasks yet. Create one from the Dashboard.</div>
+{% if parent_breadcrumb %}
+<nav class="breadcrumb" style="margin-bottom:var(--sp-4)">
+    <a href="/tasks">All Tasks</a>
+    <span class="breadcrumb-sep">&#8250;</span>
+    {% for crumb in parent_breadcrumb %}
+    <a href="/tasks?parent_id={{ crumb.id }}">{{ crumb.task_type | capitalize }}: {{ crumb.title[:30] }}</a>
+    {% if not loop.last %}<span class="breadcrumb-sep">&#8250;</span>{% endif %}
+    {% endfor %}
+</nav>
 {% endif %}
 
-<a href="/" class="btn btn-primary">← Dashboard</a>
+<!-- Filter bar -->
+<div class="filter-bar">
+    <input type="hidden" name="source" value="{{ filter_source }}">
+    <div class="filter-group">
+        <label>Type</label>
+        <select name="type" hx-get="/tasks/list" hx-target="#task-table-wrap" hx-swap="innerHTML" hx-include=".filter-bar [name]">
+            <option value="">All</option>
+            {% for tp in all_types %}
+            <option value="{{ tp }}" {% if filter_type == tp %}selected{% endif %}>{{ tp | capitalize }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="filter-group">
+        <label>Status</label>
+        <select name="status" hx-get="/tasks/list" hx-target="#task-table-wrap" hx-swap="innerHTML" hx-include=".filter-bar [name]">
+            <option value="">All</option>
+            {% for st in all_statuses %}
+            <option value="{{ st }}" {% if filter_status == st %}selected{% endif %}>{{ st }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="filter-group">
+        <label>Priority</label>
+        <select name="priority" hx-get="/tasks/list" hx-target="#task-table-wrap" hx-swap="innerHTML" hx-include=".filter-bar [name]">
+            <option value="">All</option>
+            {% for p in all_priorities %}
+            <option value="{{ p }}" {% if filter_priority == p %}selected{% endif %}>{{ p | capitalize }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="filter-group">
+        <label>Parent</label>
+        <input type="number" name="parent_id" placeholder="ID"
+               value="{{ filter_parent_id or '' }}"
+               hx-get="/tasks/list" hx-target="#task-table-wrap" hx-swap="innerHTML" hx-include=".filter-bar [name]"
+               hx-trigger="change, keyup changed delay:500ms"
+               style="width:80px" min="1">
+    </div>
+    <div class="filter-group" style="align-self:flex-end">
+        <a href="/tasks" class="btn btn-ghost btn-sm">Reset</a>
+    </div>
+</div>
+
+<!-- Task table -->
+<div id="task-table-wrap">
+    {% include "partials/task_table.html" %}
+</div>
+
+<nav class="nav-bar">
+    <a href="/" class="btn btn-ghost">&#8592; Dashboard</a>
+</nav>
 {% endblock %}

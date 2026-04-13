@@ -1,0 +1,323 @@
+"""OpenClaw Hub — Data access layer (repository).
+
+All SQL queries live here. Functions take ``aiosqlite.Connection`` as the
+first argument and return raw rows (``aiosqlite.Row``) or primitives.
+No Pydantic models, no business logic.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import aiosqlite
+
+# ---------------------------------------------------------------------------
+# Tasks — Read
+# ---------------------------------------------------------------------------
+
+
+async def get_task(
+    db: aiosqlite.Connection,
+    task_id: int,
+) -> aiosqlite.Row | None:
+    rows = await db.execute_fetchall(
+        "SELECT * FROM tasks WHERE id=?",
+        (task_id,),
+    )
+    return rows[0] if rows else None
+
+
+async def list_tasks_filtered(
+    db: aiosqlite.Connection,
+    *,
+    status: str | None = None,
+    task_type: str | None = None,
+    priority: str | None = None,
+    source: str | None = None,
+    parent_id: int | None = None,
+    limit: int = 50,
+) -> list[aiosqlite.Row]:
+    conditions: list[str] = []
+    params: list[Any] = []
+
+    if status:
+        conditions.append("status=?")
+        params.append(status)
+    if task_type:
+        conditions.append("task_type=?")
+        params.append(task_type)
+    if priority:
+        conditions.append("priority=?")
+        params.append(priority)
+    if source:
+        conditions.append("source=?")
+        params.append(source)
+    if parent_id is not None:
+        conditions.append("parent_id=?")
+        params.append(parent_id)
+
+    where = " AND ".join(conditions) if conditions else "1=1"
+    params.append(limit)
+    return await db.execute_fetchall(
+        f"SELECT * FROM tasks WHERE {where} ORDER BY position ASC, id DESC LIMIT ?",
+        tuple(params),
+    )
+
+
+async def list_tasks_by_statuses(
+    db: aiosqlite.Connection,
+    statuses: list[str],
+    *,
+    limit: int = 20,
+) -> list[aiosqlite.Row]:
+    placeholders = ",".join("?" for _ in statuses)
+    return await db.execute_fetchall(
+        f"SELECT * FROM tasks WHERE status IN ({placeholders}) ORDER BY id DESC LIMIT ?",
+        (*statuses, limit),
+    )
+
+
+async def list_tasks_by_status(
+    db: aiosqlite.Connection,
+    status: str,
+    *,
+    order_by: str = "id DESC",
+    limit: int = 20,
+) -> list[aiosqlite.Row]:
+    return await db.execute_fetchall(
+        f"SELECT * FROM tasks WHERE status=? ORDER BY {order_by} LIMIT ?",
+        (status, limit),
+    )
+
+
+async def list_running_dispatchable(
+    db: aiosqlite.Connection,
+) -> list[aiosqlite.Row]:
+    return await db.execute_fetchall(
+        "SELECT * FROM tasks WHERE status IN ('running', 'fix_requested') "
+        "AND job_id IS NOT NULL",
+    )
+
+
+async def list_review_tasks(
+    db: aiosqlite.Connection,
+) -> list[aiosqlite.Row]:
+    return await db.execute_fetchall(
+        "SELECT * FROM tasks WHERE status='review' AND review_job_id IS NOT NULL",
+    )
+
+
+async def list_ci_check_tasks(
+    db: aiosqlite.Connection,
+) -> list[aiosqlite.Row]:
+    return await db.execute_fetchall(
+        "SELECT * FROM tasks WHERE status='ci_check'",
+    )
+
+
+async def list_stale_running(
+    db: aiosqlite.Connection,
+    threshold_minutes: int,
+) -> list[aiosqlite.Row]:
+    return await db.execute_fetchall(
+        "SELECT * FROM tasks WHERE status='running' "
+        "AND updated_at < datetime('now', ?)",
+        (f"-{threshold_minutes} minutes",),
+    )
+
+
+async def list_active_epics(
+    db: aiosqlite.Connection,
+    *,
+    limit: int = 20,
+) -> list[aiosqlite.Row]:
+    return await db.execute_fetchall(
+        "SELECT * FROM tasks WHERE task_type='epic' "
+        "AND status NOT IN ('completed','failed','rejected') "
+        "ORDER BY position ASC, id DESC LIMIT ?",
+        (limit,),
+    )
+
+
+async def list_agent_tasks(
+    db: aiosqlite.Connection,
+    status: str | None = None,
+    *,
+    limit: int = 50,
+) -> list[aiosqlite.Row]:
+    if status:
+        return await db.execute_fetchall(
+            "SELECT * FROM tasks WHERE source='agent' AND status=? "
+            "ORDER BY id DESC LIMIT ?",
+            (status, limit),
+        )
+    return await db.execute_fetchall(
+        "SELECT * FROM tasks WHERE source='agent' ORDER BY id DESC LIMIT ?",
+        (limit,),
+    )
+
+
+async def get_siblings(
+    db: aiosqlite.Connection,
+    parent_id: int,
+    exclude_id: int,
+) -> list[aiosqlite.Row]:
+    return await db.execute_fetchall(
+        "SELECT id, title, task_type, status FROM tasks "
+        "WHERE parent_id=? AND id!=? ORDER BY position ASC, id ASC",
+        (parent_id, exclude_id),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tasks — Write
+# ---------------------------------------------------------------------------
+
+
+async def create_task(
+    db: aiosqlite.Connection,
+    *,
+    title: str,
+    description: str,
+    runtime: str,
+    source: str,
+    assigned_agent: str,
+    rationale: str,
+    status: str,
+    auto_review: bool,
+    task_type: str,
+    parent_id: int | None,
+    priority: str,
+    position: int = 0,
+) -> int:
+    cur = await db.execute(
+        "INSERT INTO tasks (title, description, runtime, source, assigned_agent, "
+        "rationale, status, auto_review, task_type, parent_id, priority, position) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            title,
+            description,
+            runtime,
+            source,
+            assigned_agent,
+            rationale,
+            status,
+            int(auto_review),
+            task_type,
+            parent_id,
+            priority,
+            position,
+        ),
+    )
+    return cur.lastrowid  # type: ignore[return-value]
+
+
+async def update_task(
+    db: aiosqlite.Connection,
+    task_id: int,
+    **fields: Any,
+) -> None:
+    """Update arbitrary task columns and always bump ``updated_at``."""
+    sets = [f"{k}=?" for k in fields]
+    sets.append("updated_at=datetime('now')")
+    values = list(fields.values())
+    values.append(task_id)
+    await db.execute(
+        f"UPDATE tasks SET {', '.join(sets)} WHERE id=?",
+        tuple(values),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task Updates — Read
+# ---------------------------------------------------------------------------
+
+
+async def get_task_updates(
+    db: aiosqlite.Connection,
+    task_id: int,
+) -> list[aiosqlite.Row]:
+    return await db.execute_fetchall(
+        "SELECT * FROM task_updates WHERE task_id=? ORDER BY id ASC",
+        (task_id,),
+    )
+
+
+async def get_task_update_by_id(
+    db: aiosqlite.Connection,
+    update_id: int,
+) -> aiosqlite.Row | None:
+    rows = await db.execute_fetchall(
+        "SELECT * FROM task_updates WHERE id=?",
+        (update_id,),
+    )
+    return rows[0] if rows else None
+
+
+async def has_done_updates(
+    db: aiosqlite.Connection,
+    task_id: int,
+) -> bool:
+    rows = await db.execute_fetchall(
+        "SELECT id FROM task_updates WHERE task_id=? AND kind='done'",
+        (task_id,),
+    )
+    return bool(rows)
+
+
+async def has_plan_updates(
+    db: aiosqlite.Connection,
+    task_id: int,
+) -> bool:
+    rows = await db.execute_fetchall(
+        "SELECT id FROM task_updates WHERE task_id=? "
+        "AND kind='status' AND content LIKE 'Plan:%'",
+        (task_id,),
+    )
+    return bool(rows)
+
+
+async def has_stale_alert(
+    db: aiosqlite.Connection,
+    task_id: int,
+) -> bool:
+    rows = await db.execute_fetchall(
+        "SELECT id FROM task_updates WHERE task_id=? AND kind='alert' "
+        "AND content LIKE '%stale%' ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    )
+    return bool(rows)
+
+
+# ---------------------------------------------------------------------------
+# Task Updates — Write
+# ---------------------------------------------------------------------------
+
+
+async def add_task_update(
+    db: aiosqlite.Connection,
+    task_id: int,
+    agent: str,
+    kind: str,
+    content: str,
+) -> int:
+    cur = await db.execute(
+        "INSERT INTO task_updates (task_id, agent, kind, content) VALUES (?, ?, ?, ?)",
+        (task_id, agent, kind, content),
+    )
+    return cur.lastrowid  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
+# Activity — Read
+# ---------------------------------------------------------------------------
+
+
+async def list_activity(
+    db: aiosqlite.Connection,
+    limit: int = 30,
+) -> list[aiosqlite.Row]:
+    return await db.execute_fetchall(
+        "SELECT * FROM activity_log ORDER BY id DESC LIMIT ?",
+        (limit,),
+    )

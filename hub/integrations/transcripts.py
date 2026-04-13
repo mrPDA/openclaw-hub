@@ -1,4 +1,5 @@
 """Agent transcript monitoring — read latest transcripts for running agents."""
+
 from __future__ import annotations
 
 import json
@@ -31,40 +32,50 @@ def _parse_jsonl_tail(path: Path, max_events: int = 20) -> list[dict[str, Any]]:
     return events
 
 
-def list_recent_transcripts(limit: int = 10) -> list[dict[str, Any]]:
-    if not TRANSCRIPTS_DIR.is_dir():
-        return []
-    files = sorted(TRANSCRIPTS_DIR.glob("**/*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-    results: list[dict[str, Any]] = []
-    for f in files[:limit]:
-        events = _parse_jsonl_tail(f, max_events=3)
-        last_role = ""
-        last_text = ""
-        for ev in reversed(events):
-            role = ev.get("role", "")
-            if role in ("assistant", "user"):
-                last_role = role
-                content = ev.get("content", "")
-                if isinstance(content, str):
-                    last_text = content[:200]
-                elif isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            last_text = str(block.get("text", ""))[:200]
-                            break
-                break
-        results.append({
-            "path": str(f),
-            "name": f.stem,
-            "modified": f.stat().st_mtime,
-            "last_role": last_role,
-            "last_text": last_text,
-        })
-    return results
+class TranscriptsIntegration:
+    """Concrete transcripts plugin backed by local JSONL files."""
 
+    def list_recent_transcripts(self, limit: int = 10) -> list[dict[str, Any]]:
+        if not TRANSCRIPTS_DIR.is_dir():
+            return []
+        files = sorted(
+            TRANSCRIPTS_DIR.glob("**/*.jsonl"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        results: list[dict[str, Any]] = []
+        for f in files[:limit]:
+            events = _parse_jsonl_tail(f, max_events=3)
+            last_role = ""
+            last_text = ""
+            for ev in reversed(events):
+                role = ev.get("role", "")
+                if role in ("assistant", "user"):
+                    last_role = role
+                    content = ev.get("content", "")
+                    if isinstance(content, str):
+                        last_text = content[:200]
+                    elif isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                last_text = str(block.get("text", ""))[:200]
+                                break
+                    break
+            results.append(
+                {
+                    "path": str(f),
+                    "name": f.stem,
+                    "modified": f.stat().st_mtime,
+                    "last_role": last_role,
+                    "last_text": last_text,
+                }
+            )
+        return results
 
-def transcript_detail(transcript_path: str, tail_events: int = 30) -> list[dict[str, Any]]:
-    p = Path(transcript_path)
-    if not p.exists():
-        return []
-    return _parse_jsonl_tail(p, max_events=tail_events)
+    def transcript_detail(
+        self, transcript_path: str, tail_events: int = 30
+    ) -> list[dict[str, Any]]:
+        p = Path(transcript_path)
+        if not p.exists():
+            return []
+        return _parse_jsonl_tail(p, max_events=tail_events)
