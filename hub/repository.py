@@ -11,6 +11,12 @@ from typing import Any
 
 import aiosqlite
 
+from hub.db import (
+    STRUCTURED_TASK_FIELDS,
+    ac_to_row_kwargs,
+    structured_fields_to_db,
+)
+
 # ---------------------------------------------------------------------------
 # Tasks — Read
 # ---------------------------------------------------------------------------
@@ -226,6 +232,169 @@ async def update_task(
         f"UPDATE tasks SET {', '.join(sets)} WHERE id=?",
         tuple(values),
     )
+
+
+async def create_task_full(
+    db: aiosqlite.Connection,
+    payload: Any,
+    *,
+    status: str,
+    position: int = 0,
+) -> int:
+    """Insert a task from a TaskCreate-like model with all structured fields.
+
+    Used by the Hub API and CLI when the new structured form is enabled.
+    The legacy ``create_task`` stays untouched for callers that still pass
+    individual columns.
+    """
+    structured = structured_fields_to_db(payload)
+    base_kwargs = {
+        "title": payload.title,
+        "description": payload.description,
+        "runtime": payload.runtime.value if hasattr(payload.runtime, "value") else payload.runtime,
+        "source": payload.source.value if hasattr(payload.source, "value") else payload.source,
+        "assigned_agent": payload.agent,
+        "rationale": payload.rationale,
+        "status": status,
+        "auto_review": int(bool(payload.auto_review)),
+        "task_type": payload.task_type.value if hasattr(payload.task_type, "value") else payload.task_type,
+        "parent_id": payload.parent_id,
+        "priority": payload.priority.value if hasattr(payload.priority, "value") else payload.priority,
+        "position": position,
+    }
+    columns = list(base_kwargs) + [k for k in STRUCTURED_TASK_FIELDS if k in structured]
+    values = [base_kwargs[k] for k in base_kwargs] + [
+        structured[k] for k in STRUCTURED_TASK_FIELDS if k in structured
+    ]
+    placeholders = ", ".join("?" for _ in columns)
+    cur = await db.execute(
+        f"INSERT INTO tasks ({', '.join(columns)}) VALUES ({placeholders})",
+        tuple(values),
+    )
+    return cur.lastrowid  # type: ignore[return-value]
+
+
+async def update_task_structured(
+    db: aiosqlite.Connection,
+    task_id: int,
+    refine: Any,
+) -> dict[str, Any]:
+    """Apply a TaskRefine PATCH-style payload to ``tasks``.
+
+    Only fields explicitly set on the model are written. Returns the dict
+    of column updates actually applied (useful for tests and audit). ACs
+    are NOT handled here — they live in their own table.
+    """
+    updates = structured_fields_to_db(refine, exclude_unset=True)
+    if not updates:
+        return {}
+    await update_task(db, task_id, **updates)
+    return updates
+
+
+# ---------------------------------------------------------------------------
+# Acceptance criteria — CRUD
+# ---------------------------------------------------------------------------
+
+
+async def list_acceptance_criteria(
+    db: aiosqlite.Connection,
+    task_id: int,
+) -> list[aiosqlite.Row]:
+    return await db.execute_fetchall(
+        "SELECT * FROM acceptance_criteria WHERE task_id=? "
+        "ORDER BY position ASC, id ASC",
+        (task_id,),
+    )
+
+
+async def add_acceptance_criterion(
+    db: aiosqlite.Connection,
+    task_id: int,
+    ac: Any,
+    *,
+    position: int | None = None,
+) -> int:
+    """Insert a single AC. Raises ``aiosqlite.IntegrityError`` if the
+    ``(task_id, ac_id)`` pair already exists — callers translate to 409.
+    """
+    if position is None:
+        rows = await db.execute_fetchall(
+            "SELECT COALESCE(MAX(position), -1) + 1 AS next_pos "
+            "FROM acceptance_criteria WHERE task_id=?",
+            (task_id,),
+        )
+        position = int(rows[0]["next_pos"]) if rows else 0
+    kwargs = ac_to_row_kwargs(ac)
+    cur = await db.execute(
+        "INSERT INTO acceptance_criteria "
+        "(task_id, ac_id, given, when_clause, then_clause, verifiable_by, "
+        "test_ref, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            task_id,
+            kwargs["ac_id"],
+            kwargs["given"],
+            kwargs["when_clause"],
+            kwargs["then_clause"],
+            kwargs["verifiable_by"],
+            kwargs["test_ref"],
+            position,
+        ),
+    )
+    return cur.lastrowid  # type: ignore[return-value]
+
+
+async def replace_acceptance_criteria(
+    db: aiosqlite.Connection,
+    task_id: int,
+    items: list[Any],
+) -> int:
+    """Atomic replace: validate uniqueness in payload, DELETE all, INSERT new.
+
+    Returns the number of inserted ACs. Caller is responsible for
+    ``commit()`` (consistent with the rest of repository).
+    """
+    seen: set[str] = set()
+    for ac in items:
+        if ac.id in seen:
+            raise ValueError(f"duplicate ac_id in payload: {ac.id}")
+        seen.add(ac.id)
+
+    await db.execute(
+        "DELETE FROM acceptance_criteria WHERE task_id=?", (task_id,)
+    )
+    for position, ac in enumerate(items):
+        kwargs = ac_to_row_kwargs(ac)
+        await db.execute(
+            "INSERT INTO acceptance_criteria "
+            "(task_id, ac_id, given, when_clause, then_clause, "
+            "verifiable_by, test_ref, position) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                task_id,
+                kwargs["ac_id"],
+                kwargs["given"],
+                kwargs["when_clause"],
+                kwargs["then_clause"],
+                kwargs["verifiable_by"],
+                kwargs["test_ref"],
+                position,
+            ),
+        )
+    return len(items)
+
+
+async def delete_acceptance_criterion(
+    db: aiosqlite.Connection,
+    task_id: int,
+    ac_id: str,
+) -> bool:
+    """Delete a single AC by its task-scoped id. Returns True if removed."""
+    cur = await db.execute(
+        "DELETE FROM acceptance_criteria WHERE task_id=? AND ac_id=?",
+        (task_id, ac_id),
+    )
+    return cur.rowcount > 0
 
 
 # ---------------------------------------------------------------------------

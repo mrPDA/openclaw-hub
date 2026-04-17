@@ -244,6 +244,130 @@ def deserialize_risks(raw: str | None) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)]
 
 
+# --- Pydantic <-> DB mapping for structured task form ---
+
+# All list[str] columns serialized as JSON in TEXT.
+LIST_STR_COLUMNS = frozenset(
+    {
+        "scope_in",
+        "scope_out",
+        "affected_areas",
+        "constraints",
+        "assumptions",
+        "validation_commands",
+        "out_of_scope_for_review",
+    }
+)
+
+# Subset of Pydantic field names that map 1:1 to DB columns for structured
+# task data on tasks table. Ordering kept stable for deterministic SQL.
+STRUCTURED_TASK_FIELDS: tuple[str, ...] = (
+    "work_type",
+    "class_of_service",
+    "size",
+    "wip_tag",
+    "due_date",
+    "user_story",
+    "problem_statement",
+    "business_value",
+    "scope_in",
+    "scope_out",
+    "affected_areas",
+    "technical_hints",
+    "constraints",
+    "assumptions",
+    "validation_commands",
+    "out_of_scope_for_review",
+    "risks",
+)
+
+
+def structured_fields_to_db(model: Any, *, exclude_unset: bool = False) -> dict[str, Any]:
+    """Convert a TaskCreate or TaskRefine model to DB column kwargs.
+
+    - enums -> their string values (via Pydantic mode='json')
+    - list[str] / list[TaskRisk] -> JSON-encoded TEXT
+    - acceptance_criteria is intentionally skipped: AC live in their
+      own table and are written via the AC CRUD helpers.
+
+    Pass ``exclude_unset=True`` for PATCH-style refine to leave omitted
+    fields untouched.
+    """
+    data = model.model_dump(mode="json", exclude_unset=exclude_unset)
+    out: dict[str, Any] = {}
+    for key, value in data.items():
+        if key == "acceptance_criteria":
+            continue
+        if key == "risks":
+            if value is None:
+                continue
+            out["risks"] = serialize_risks(value)
+        elif key in LIST_STR_COLUMNS:
+            if value is None:
+                continue
+            out[key] = serialize_str_list(value)
+        else:
+            out[key] = value
+    return out
+
+
+def structured_fields_from_row(row: Any) -> dict[str, Any]:
+    """Extract structured fields from a tasks row into Pydantic-ready dict.
+
+    Inverse of ``structured_fields_to_db``: deserializes JSON columns back
+    into Python lists, returns enum values as raw strings (Pydantic will
+    coerce to enum on TaskView construction).
+    """
+    out: dict[str, Any] = {}
+    keys = row.keys() if hasattr(row, "keys") else []
+    for field in STRUCTURED_TASK_FIELDS:
+        if field not in keys:
+            continue
+        value = row[field]
+        if field == "risks":
+            out[field] = deserialize_risks(value)
+        elif field in LIST_STR_COLUMNS:
+            out[field] = deserialize_str_list(value)
+        else:
+            out[field] = value
+    for ts_field in ("readiness_score", "dor_passed", "ready_at", "started_at", "completed_at"):
+        if ts_field in keys:
+            value = row[ts_field]
+            if ts_field == "dor_passed" and value is not None:
+                out[ts_field] = bool(value)
+            else:
+                out[ts_field] = value
+    return out
+
+
+def ac_to_row_kwargs(ac: Any) -> dict[str, Any]:
+    """Convert an AcceptanceCriterion model to DB column kwargs.
+
+    Maps Pydantic ``when``/``then`` to ``when_clause``/``then_clause``
+    because WHEN/THEN are SQLite reserved words.
+    """
+    return {
+        "ac_id": ac.id,
+        "given": ac.given,
+        "when_clause": ac.when,
+        "then_clause": ac.then,
+        "verifiable_by": ac.verifiable_by.value,
+        "test_ref": ac.test_ref,
+    }
+
+
+def row_to_ac_kwargs(row: Any) -> dict[str, Any]:
+    """Convert a DB row to kwargs ready for AcceptanceCriterion(**kwargs)."""
+    return {
+        "id": row["ac_id"],
+        "given": row["given"],
+        "when": row["when_clause"],
+        "then": row["then_clause"],
+        "verifiable_by": row["verifiable_by"],
+        "test_ref": row["test_ref"],
+    }
+
+
 async def _column_exists(db: aiosqlite.Connection, table: str, column: str) -> bool:
     """Check if a column exists in a table via PRAGMA table_info."""
     rows = await db.execute_fetchall(f"PRAGMA table_info({table})")
