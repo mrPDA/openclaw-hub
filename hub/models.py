@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -44,6 +44,78 @@ class RuntimeChoice(str, Enum):
     auto = "auto"
     openrouter = "openrouter"
     vast = "vast"
+
+
+# --- Structured task form enums (Epic #32) ---
+
+
+class WorkType(str, Enum):
+    """High-level work classification (Kanban work item type)."""
+
+    feature = "feature"
+    bug = "bug"
+    refactor = "refactor"
+    chore = "chore"
+    docs = "docs"
+    spike = "spike"
+    incident = "incident"
+
+
+class ClassOfService(str, Enum):
+    """Kanban class of service for prioritization and SLA."""
+
+    standard = "standard"
+    expedite = "expedite"
+    fixed_date = "fixed_date"
+    intangible = "intangible"
+
+
+class TaskSize(str, Enum):
+    """T-shirt sizing for relative effort estimation."""
+
+    XS = "XS"
+    S = "S"
+    M = "M"
+    L = "L"
+    XL = "XL"
+
+
+class WipTag(str, Enum):
+    """WIP bucket tag for capacity allocation per category."""
+
+    feature_work = "feature_work"
+    bugfix = "bugfix"
+    tech_debt = "tech_debt"
+    support = "support"
+
+
+class ACVerifiableBy(str, Enum):
+    """How an acceptance criterion can be verified."""
+
+    test = "test"
+    manual = "manual"
+    log_check = "log_check"
+    ui_check = "ui_check"
+
+
+class RiskKind(str, Enum):
+    """Catalog of risk categories surfaced during DoR analysis."""
+
+    ambiguous_requirements = "ambiguous_requirements"
+    large_scope = "large_scope"
+    external_dependency = "external_dependency"
+    data_migration = "data_migration"
+    breaking_change = "breaking_change"
+    security = "security"
+    performance = "performance"
+    unknown_unknowns = "unknown_unknowns"
+    other = "other"
+
+
+class RiskSeverity(str, Enum):
+    low = "low"
+    medium = "medium"
+    high = "high"
 
 
 # Allowed parent task_type -> child task_type mapping
@@ -95,11 +167,32 @@ class TaskCreate(BaseModel):
     run_immediately: bool = False
     auto_review: bool = True
 
+    # Structured task form (Epic #32). All optional on create —
+    # readiness gate evaluates them at approve time, not at creation.
+    work_type: WorkType = WorkType.feature
+    class_of_service: ClassOfService = ClassOfService.standard
+    size: TaskSize | None = None
+    wip_tag: WipTag | None = None
+    due_date: str | None = Field(default=None, max_length=32)
+    user_story: str = Field("", max_length=1000)
+    problem_statement: str = Field("", max_length=2000)
+    business_value: str = Field("", max_length=500)
+    scope_in: list[str] = Field(default_factory=list, max_length=20)
+    scope_out: list[str] = Field(default_factory=list, max_length=20)
+    affected_areas: list[str] = Field(default_factory=list, max_length=20)
+    technical_hints: str = Field("", max_length=3000)
+    constraints: list[str] = Field(default_factory=list, max_length=10)
+    assumptions: list[str] = Field(default_factory=list, max_length=10)
+    validation_commands: list[str] = Field(default_factory=list, max_length=10)
+    out_of_scope_for_review: list[str] = Field(default_factory=list, max_length=10)
+
 
 class TaskApprove(BaseModel):
     comment: str = ""
     run: bool = False
     runtime: RuntimeChoice | None = None
+    # Bypass the DoR gate. Override is allowed but logged for audit.
+    force: bool = False
 
 
 class TaskReject(BaseModel):
@@ -137,6 +230,85 @@ class TaskUpdateCreate(BaseModel):
 
 class TaskReorder(BaseModel):
     position: int = Field(..., ge=0)
+
+
+# --- Structured task form: ACs, risks, refine, readiness (Epic #32) ---
+
+
+class AcceptanceCriterion(BaseModel):
+    """A single Given/When/Then scenario verifiable by a concrete method."""
+
+    id: str = Field(..., pattern=r"^AC-\d+$", max_length=20)
+    given: str = Field(..., min_length=1, max_length=500)
+    when: str = Field(..., min_length=1, max_length=500)
+    then: str = Field(..., min_length=1, max_length=500)
+    verifiable_by: ACVerifiableBy
+    test_ref: str | None = Field(default=None, max_length=500)
+
+
+class TaskRisk(BaseModel):
+    """A concrete risk with severity and mitigation plan."""
+
+    kind: RiskKind
+    severity: RiskSeverity
+    description: str = Field(..., min_length=1, max_length=1000)
+    mitigation: str = Field(..., min_length=1, max_length=1000)
+
+
+class TaskRefine(BaseModel):
+    """PATCH payload for structured fields. Every field is optional —
+    omitted keys leave the existing value untouched."""
+
+    work_type: WorkType | None = None
+    class_of_service: ClassOfService | None = None
+    size: TaskSize | None = None
+    wip_tag: WipTag | None = None
+    due_date: str | None = Field(default=None, max_length=32)
+    user_story: str | None = Field(default=None, max_length=1000)
+    problem_statement: str | None = Field(default=None, max_length=2000)
+    business_value: str | None = Field(default=None, max_length=500)
+    scope_in: list[str] | None = Field(default=None, max_length=20)
+    scope_out: list[str] | None = Field(default=None, max_length=20)
+    affected_areas: list[str] | None = Field(default=None, max_length=20)
+    technical_hints: str | None = Field(default=None, max_length=3000)
+    constraints: list[str] | None = Field(default=None, max_length=10)
+    assumptions: list[str] | None = Field(default=None, max_length=10)
+    validation_commands: list[str] | None = Field(default=None, max_length=10)
+    out_of_scope_for_review: list[str] | None = Field(default=None, max_length=10)
+    risks: list[TaskRisk] | None = None
+    acceptance_criteria: list[AcceptanceCriterion] | None = None
+
+
+class DoRCheckItem(BaseModel):
+    """Single Definition of Ready check result."""
+
+    key: str
+    passed: bool
+    detail: str = ""
+
+
+RecommendationSeverity = Literal["blocking", "high", "medium", "low"]
+
+
+class Recommendation(BaseModel):
+    """Actionable suggestion to improve task readiness."""
+
+    field: str
+    severity: RecommendationSeverity
+    message: str
+    expected_score_delta: int = 0
+    estimated_minutes: int = 0
+
+
+class ReadinessReport(BaseModel):
+    """Result of a deterministic (non-LLM) readiness analysis for a task."""
+
+    score: int = Field(..., ge=0, le=100)
+    dor_passed: bool
+    dor_checks: list[DoRCheckItem] = Field(default_factory=list)
+    risks: list[TaskRisk] = Field(default_factory=list)
+    recommendations: list[Recommendation] = Field(default_factory=list)
+    explain: list[dict[str, Any]] | None = None
 
 
 # --- Response models ---
@@ -202,6 +374,32 @@ class TaskView(BaseModel):
     progress: TaskProgress | None = None
     created_at: str
     updated_at: str
+
+    # Structured task form (Epic #32). Optional so list-views can omit
+    # heavy fields (ACs/risks) without breaking existing consumers.
+    work_type: WorkType | None = None
+    class_of_service: ClassOfService | None = None
+    size: TaskSize | None = None
+    wip_tag: WipTag | None = None
+    due_date: str | None = None
+    user_story: str = ""
+    problem_statement: str = ""
+    business_value: str = ""
+    scope_in: list[str] = Field(default_factory=list)
+    scope_out: list[str] = Field(default_factory=list)
+    affected_areas: list[str] = Field(default_factory=list)
+    technical_hints: str = ""
+    constraints: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+    validation_commands: list[str] = Field(default_factory=list)
+    out_of_scope_for_review: list[str] = Field(default_factory=list)
+    risks: list[TaskRisk] = Field(default_factory=list)
+    acceptance_criteria: list[AcceptanceCriterion] | None = None
+    readiness_score: int | None = None
+    dor_passed: bool | None = None
+    ready_at: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
 
 
 class TaskTreeNode(BaseModel):
