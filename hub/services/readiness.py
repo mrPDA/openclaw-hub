@@ -128,8 +128,12 @@ def calculate_score_from_data(
     return score, components
 
 
-def _parse_risks_from_row(raw: str | None) -> list[TaskRisk]:
-    """Validate JSON-stored risks via Pydantic, drop malformed entries."""
+def parse_risks_from_row(raw: str | None) -> list[TaskRisk]:
+    """Validate JSON-stored risks via Pydantic, drop malformed entries.
+
+    Public because the recommendations engine reuses it to keep both
+    score and recommendations talking about the same risk set.
+    """
     out: list[TaskRisk] = []
     for item in deserialize_risks(raw):
         try:
@@ -156,7 +160,7 @@ async def calculate_readiness(
     dor = await evaluate_dor(db, task_id)
     row = await repo.get_task(db, task_id)
     risks_raw = row["risks"] if row is not None and "risks" in row.keys() else None
-    risks = _parse_risks_from_row(risks_raw)
+    risks = parse_risks_from_row(risks_raw)
 
     score, components = calculate_score_from_data(dor=dor, risks=risks, config=config)
     return ReadinessReport(
@@ -175,4 +179,5 @@ __all__ = [
     "ScoreComponent",
     "calculate_readiness",
     "calculate_score_from_data",
+    "parse_risks_from_row",
 ]

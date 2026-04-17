@@ -19,6 +19,14 @@ from hub.services.readiness import (
     ScoreComponent,
     calculate_readiness,
     calculate_score_from_data,
+    parse_risks_from_row,
+)
+from hub.services.recommendations import (
+    CHECK_RECOMMENDATIONS,
+    SEVERITY_ORDER,
+    build_for_task,
+    build_recommendations,
+    calculate_readiness_with_recommendations,
 )
 from hub.services.lifecycle import (
     add_update,
@@ -48,15 +56,21 @@ from hub.services.orchestration import (
 )
 
 __all__ = [
+    "CHECK_RECOMMENDATIONS",
     "DEFAULT_CONFIG",
     "DOR_CHECK_KEYS",
     "DOR_REQUIRED_BY_WORK_TYPE",
     "DoREvaluation",
     "ReadinessConfig",
+    "SEVERITY_ORDER",
     "ScoreComponent",
     "add_update",
+    "build_for_task",
+    "build_recommendations",
     "calculate_readiness",
+    "calculate_readiness_with_recommendations",
     "calculate_score_from_data",
+    "parse_risks_from_row",
     "answer_question",
     "approve_task",
     "ask_question",
