@@ -7,6 +7,12 @@ from hub.services.dashboard import (
     list_activity,
     list_tasks,
 )
+from hub.services.dor import (
+    DOR_CHECK_KEYS,
+    DOR_REQUIRED_BY_WORK_TYPE,
+    DoREvaluation,
+    evaluate_dor,
+)
 from hub.services.lifecycle import (
     add_update,
     answer_question,
@@ -35,6 +41,9 @@ from hub.services.orchestration import (
 )
 
 __all__ = [
+    "DOR_CHECK_KEYS",
+    "DOR_REQUIRED_BY_WORK_TYPE",
+    "DoREvaluation",
     "add_update",
     "answer_question",
     "approve_task",
@@ -47,6 +56,7 @@ __all__ = [
     "dispatch_review",
     "dispatch_task",
     "enrich_task_view",
+    "evaluate_dor",
     "extract_review_verdict",
     "force_complete_task",
     "get_breadcrumb_str",
