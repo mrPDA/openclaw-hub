@@ -13,6 +13,13 @@ from hub.services.dor import (
     DoREvaluation,
     evaluate_dor,
 )
+from hub.services.readiness import (
+    DEFAULT_CONFIG,
+    ReadinessConfig,
+    ScoreComponent,
+    calculate_readiness,
+    calculate_score_from_data,
+)
 from hub.services.lifecycle import (
     add_update,
     answer_question,
@@ -41,10 +48,15 @@ from hub.services.orchestration import (
 )
 
 __all__ = [
+    "DEFAULT_CONFIG",
     "DOR_CHECK_KEYS",
     "DOR_REQUIRED_BY_WORK_TYPE",
     "DoREvaluation",
+    "ReadinessConfig",
+    "ScoreComponent",
     "add_update",
+    "calculate_readiness",
+    "calculate_score_from_data",
     "answer_question",
     "approve_task",
     "ask_question",
