@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -105,7 +106,142 @@ _MIGRATIONS: list[tuple[str, str]] = [
         "idx_task_updates_task_id",
         "CREATE INDEX IF NOT EXISTS idx_task_updates_task_id ON task_updates(task_id)",
     ),
+    # Structured task form (Kanban DoR) — see Epic #32.
+    # Nullable / empty defaults so existing rows stay valid without backfill.
+    (
+        "add_work_type_column",
+        "ALTER TABLE tasks ADD COLUMN work_type TEXT NOT NULL DEFAULT 'feature'",
+    ),
+    (
+        "add_class_of_service_column",
+        "ALTER TABLE tasks ADD COLUMN class_of_service TEXT NOT NULL DEFAULT 'standard'",
+    ),
+    ("add_size_column", "ALTER TABLE tasks ADD COLUMN size TEXT"),
+    ("add_wip_tag_column", "ALTER TABLE tasks ADD COLUMN wip_tag TEXT"),
+    ("add_due_date_column", "ALTER TABLE tasks ADD COLUMN due_date TEXT"),
+    (
+        "add_user_story_column",
+        "ALTER TABLE tasks ADD COLUMN user_story TEXT NOT NULL DEFAULT ''",
+    ),
+    (
+        "add_problem_statement_column",
+        "ALTER TABLE tasks ADD COLUMN problem_statement TEXT NOT NULL DEFAULT ''",
+    ),
+    (
+        "add_business_value_column",
+        "ALTER TABLE tasks ADD COLUMN business_value TEXT NOT NULL DEFAULT ''",
+    ),
+    (
+        "add_scope_in_column",
+        "ALTER TABLE tasks ADD COLUMN scope_in TEXT NOT NULL DEFAULT '[]'",
+    ),
+    (
+        "add_scope_out_column",
+        "ALTER TABLE tasks ADD COLUMN scope_out TEXT NOT NULL DEFAULT '[]'",
+    ),
+    (
+        "add_affected_areas_column",
+        "ALTER TABLE tasks ADD COLUMN affected_areas TEXT NOT NULL DEFAULT '[]'",
+    ),
+    (
+        "add_technical_hints_column",
+        "ALTER TABLE tasks ADD COLUMN technical_hints TEXT NOT NULL DEFAULT ''",
+    ),
+    (
+        "add_constraints_column",
+        "ALTER TABLE tasks ADD COLUMN constraints TEXT NOT NULL DEFAULT '[]'",
+    ),
+    (
+        "add_assumptions_column",
+        "ALTER TABLE tasks ADD COLUMN assumptions TEXT NOT NULL DEFAULT '[]'",
+    ),
+    (
+        "add_validation_commands_column",
+        "ALTER TABLE tasks ADD COLUMN validation_commands TEXT NOT NULL DEFAULT '[]'",
+    ),
+    (
+        "add_out_of_scope_for_review_column",
+        "ALTER TABLE tasks ADD COLUMN out_of_scope_for_review TEXT NOT NULL DEFAULT '[]'",
+    ),
+    (
+        "add_risks_column",
+        "ALTER TABLE tasks ADD COLUMN risks TEXT NOT NULL DEFAULT '[]'",
+    ),
+    ("add_readiness_score_column", "ALTER TABLE tasks ADD COLUMN readiness_score INTEGER"),
+    ("add_dor_passed_column", "ALTER TABLE tasks ADD COLUMN dor_passed INTEGER"),
+    ("add_ready_at_column", "ALTER TABLE tasks ADD COLUMN ready_at TEXT"),
+    ("add_started_at_column", "ALTER TABLE tasks ADD COLUMN started_at TEXT"),
+    ("add_completed_at_column", "ALTER TABLE tasks ADD COLUMN completed_at TEXT"),
+    (
+        "create_acceptance_criteria_table",
+        """CREATE TABLE IF NOT EXISTS acceptance_criteria (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id         INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            ac_id           TEXT    NOT NULL,
+            given           TEXT    NOT NULL,
+            when_clause     TEXT    NOT NULL,
+            then_clause     TEXT    NOT NULL,
+            verifiable_by   TEXT    NOT NULL,
+            test_ref        TEXT,
+            position        INTEGER NOT NULL DEFAULT 0,
+            created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (task_id, ac_id)
+        )""",
+    ),
+    (
+        "idx_acceptance_criteria_task_id",
+        "CREATE INDEX IF NOT EXISTS idx_acceptance_criteria_task_id ON acceptance_criteria(task_id)",
+    ),
 ]
+
+
+def serialize_str_list(items: list[str] | None) -> str:
+    """Serialize list[str] for storage in a TEXT column.
+
+    None or empty list -> '[]' for stable defaults and predictable diffs.
+    """
+    if not items:
+        return "[]"
+    return json.dumps(list(items), ensure_ascii=False)
+
+
+def deserialize_str_list(raw: str | None) -> list[str]:
+    """Deserialize list[str] from a TEXT column.
+
+    Returns [] for None, empty string, malformed JSON, or non-list payloads —
+    callers can treat the column as "always a list" without guarding.
+    """
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except (ValueError, TypeError):
+        log.warning("deserialize_str_list: invalid JSON %r, returning []", raw)
+        return []
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
+
+
+def serialize_risks(risks: list[dict[str, Any]] | None) -> str:
+    """Serialize list[dict] (TaskRisk payloads) for storage."""
+    if not risks:
+        return "[]"
+    return json.dumps(list(risks), ensure_ascii=False)
+
+
+def deserialize_risks(raw: str | None) -> list[dict[str, Any]]:
+    """Deserialize list[dict] from TEXT column. Drops non-dict items."""
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except (ValueError, TypeError):
+        log.warning("deserialize_risks: invalid JSON %r, returning []", raw)
+        return []
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
 
 
 async def _column_exists(db: aiosqlite.Connection, table: str, column: str) -> bool:
