@@ -105,6 +105,7 @@ async def test_poll_review_dispatch(mock_sleep, db):
         auto_review=True, task_type="task", parent_id=None, priority="medium",
     )
     await repo.update_task(db, task_id, job_id="job-456", branch="task-1/test")
+    await repo.add_task_update(db, task_id, "agent", "done", "Task completed")
     await db.commit()
 
     app = _make_app(db)

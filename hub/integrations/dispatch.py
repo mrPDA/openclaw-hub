@@ -148,10 +148,18 @@ class DispatchIntegration:
             f"Цикл ревью: {review_cycle + 1}/{max_cycles}\n\n"
             "ПОРЯДОК ДЕЙСТВИЙ:\n"
             f"1. Выполни: {diff_cmd} — это весь diff задачи относительно main\n"
-            "2. Оцени: корректность логики, наличие тестов, стиль кода, обратная совместимость\n"
-            "3. Для каждого замечания укажи severity (high/medium/low) и обоснование\n"
-            "4. ОБЯЗАТЕЛЬНО запиши результат ревью командой:\n"
+            "2. Оцени ТОЛЬКО изменения, которые относятся к описанию задачи выше. "
+            "Игнорируй изменения, не связанные с задачей (форматирование, "
+            "обновление зависимостей, рефакторинг других модулей).\n"
+            "3. Критерии: корректность логики, наличие тестов для новых изменений, "
+            "стиль кода, обратная совместимость\n"
+            "4. Для каждого замечания укажи severity (high/medium/low) и обоснование\n"
+            "5. ОБЯЗАТЕЛЬНО запиши результат ревью командой:\n"
             f'   oc-hub update {task_id} --kind review --agent code-reviewer --message "<твой отчёт>"\n\n'
+            "ВАЖНО: Если основная задача выполнена корректно — ставь APPROVED, "
+            "даже если есть мелкие недочёты (low severity). "
+            "CHANGES_REQUESTED — только для высокоприоритетных проблем (high), "
+            "которые ломают логику, безопасность или обратную совместимость.\n\n"
             "ФОРМАТ ВЕРДИКТА — последняя строка отчёта ОБЯЗАНА содержать ровно одно из:\n"
             "  APPROVED\n"
             "  CHANGES_REQUESTED\n\n"
@@ -182,14 +190,19 @@ class DispatchIntegration:
         )
         return (
             f"ЗАДАНИЕ: Исправить замечания ревью для задачи #{task_id}: {title}\n\n"
+            "ВНИМАНИЕ: Это НОВОЕ задание. Предыдущие статусы done НЕ считаются. "
+            "Ревьюер нашёл проблемы, которые НУЖНО исправить прямо сейчас.\n\n"
             f"{description}\n"
             f"{branch_note}\n"
             f"--- Замечания ревьюера (цикл {review_cycle}/{max_cycles}) ---\n"
             f"{review_comments}\n\n"
             "ПОРЯДОК ДЕЙСТВИЙ:\n"
-            "1. Исправь каждое замечание ревьюера через edit (patch)\n"
-            "2. Запусти тесты: uv run pytest tests/ -x -q\n"
-            f'3. ОБЯЗАТЕЛЬНО обнови статус: oc-hub update {task_id} --kind done --message "<что исправлено и как>"\n'
+            "1. Прочитай замечания ревьюера ВЫШЕ внимательно\n"
+            "2. Исправь каждое замечание через edit (patch)\n"
+            "3. Запусти тесты: uv run pytest tests/ -x -q\n"
+            f'4. ОБЯЗАТЕЛЬНО обнови статус: oc-hub update {task_id} --kind done --message "<что исправлено и как>"\n\n'
+            "НЕ отвечай NO_REPLY. НЕ считай задачу завершённой. "
+            "ОБЯЗАТЕЛЬНО внеси правки и обнови статус.\n"
         )
 
     def build_ci_fix_message(
@@ -235,40 +248,37 @@ class DispatchIntegration:
         parts.append(
             "КРИТИЧЕСКИЕ ПРАВИЛА:\n"
             "- ЗАПРЕЩЕНО: git commit, git push. Hub делает это автоматически.\n"
-            "- ЗАПРЕЩЕНО: write tool для существующих файлов. "
-            "Используй ТОЛЬКО edit (patch). write — только для НОВЫХ файлов.\n"
-            "- После правки проверь синтаксис: "
-            'python -c "import ast; ast.parse(open(\'file.py\').read())"\n\n'
-            "СПРАВОЧНИК ПО CI ПРОВЕРКАМ — как исправлять каждую:\n\n"
+            "- Для правки файлов используй edit (patch). write — только для НОВЫХ файлов.\n"
+            "- Ты МОЖЕШЬ и ДОЛЖЕН редактировать ЛЮБЫЕ файлы, включая тесты.\n"
+            "  Если тест падает из-за изменения поведения — обнови тест "
+            "чтобы он соответствовал новому поведению.\n\n"
+            "СПРАВОЧНИК ПО CI ПРОВЕРКАМ:\n\n"
             "  Lint & Format:\n"
             "    uv run ruff check src/ tests/ --fix\n"
             "    uv run ruff format src/ tests/\n\n"
             "  Tests:\n"
-            "    uv run pytest tests/ -x -q\n\n"
+            "    uv run pytest tests/ -x -q\n"
+            "    Если тесты падают из-за НОВОГО поведения (задача меняла логику) —\n"
+            "    обнови expected-значения в тестах через edit.\n\n"
             "  Security checks (pip-audit / bandit / gitleaks):\n"
-            "    - pip-audit (CVE в зависимостях): "
-            "uv lock --upgrade-package <package_name> "
-            "(например uv lock --upgrade-package aiohttp). "
-            "Имя пакета и нужная версия указаны в логе pip-audit.\n"
-            "    - bandit (SAST): исправь код по рекомендациям bandit.\n"
-            "    - gitleaks (секреты): убери захардкоженные секреты, "
-            "используй переменные окружения.\n\n"
+            "    - pip-audit: uv lock --upgrade-package <package_name>\n"
+            "    - bandit: исправь код по рекомендациям.\n"
+            "    - gitleaks: убери секреты, используй переменные окружения.\n\n"
             "  Validate commits:\n"
-            "    Формат: <type>(<scope>): <description>\n"
-            "    type: feat|fix|docs|style|refactor|perf|test|chore|ci\n"
-            "    scope: только [a-z]+ (без цифр, дефисов, подчёркиваний)\n"
-            "    Hub коммитит сам — тебе НЕ нужно коммитить.\n\n"
+            "    Hub коммитит сам — тебе НЕ нужно коммитить. Эту ошибку ИГНОРИРУЙ.\n\n"
             "  Architecture gate:\n"
             "    uv run pytest -q tests/test_agents_architecture.py "
             "tests/test_services_architecture.py "
             "tests/test_shopping_contract_flows.py\n\n"
-            "ПОРЯДОК ДЕЙСТВИЙ:\n"
-            "1. Прочитай логи ошибок CI выше ВНИМАТЕЛЬНО\n"
-            "2. Определи тип каждой ошибки по справочнику\n"
-            "3. Исправь каждую проблему через edit (patch), НЕ через write\n"
-            "4. Проверь ЛОКАЛЬНО что исправления работают\n"
-            f"5. ОБЯЗАТЕЛЬНО обнови статус: oc-hub update {task_id} --kind done "
-            f'--message "<какие CI ошибки исправлены и как>"\n'
+            "ПОРЯДОК ДЕЙСТВИЙ (ДЕЙСТВУЙ, НЕ РАССУЖДАЙ):\n"
+            "1. Прочитай логи CI ошибок выше\n"
+            "2. Для каждой ошибки — сделай конкретное исправление через edit\n"
+            "3. Проверь локально: uv run ruff check src/ tests/ && uv run pytest tests/ -x -q\n"
+            f"4. ОБЯЗАТЕЛЬНО обнови статус: oc-hub update {task_id} --kind done "
+            f'--message "<какие CI ошибки исправлены и как>"\n\n'
+            "ЗАПРЕЩЕНО: рассуждать о том нужно ли делать изменения, "
+            "сомневаться в задаче, отвечать NO_REPLY. "
+            "Задача утверждена. Твоя единственная цель — зелёный CI.\n"
         )
 
         return "\n".join(parts)
@@ -306,9 +316,15 @@ class DispatchIntegration:
             "\nИнструкции арбитру:\n"
             f"1. Прочитай {diff_cmd} — полный diff задачи относительно main\n"
             "2. Проанализируй каждое замечание ревьюера: какие критичны, какие второстепенны, какие ложные\n"
-            "3. Оцени качество исправлений разработчика\n"
-            "4. Напиши нейтральный отчёт с рекомендацией: принять как есть или доработать (и что именно)\n"
-            f'5. Запиши результат: oc-hub update {task_id} --kind arbitration --agent arbiter --message "<отчёт>"\n'
+            "3. Оцени качество исправлений разработчика: решена ли основная задача?\n"
+            "4. Напиши нейтральный отчёт\n"
+            "5. ОБЯЗАТЕЛЬНО запиши результат ДВУМЯ командами:\n\n"
+            f'   oc-hub update {task_id} --kind arbitration --agent arbiter --message "<детальный отчёт>"\n\n'
+            f'   oc-hub update {task_id} --kind review --agent arbiter --message "<короткий вердикт>\\nAPPROVED"\n'
+            "   ИЛИ\n"
+            f'   oc-hub update {task_id} --kind review --agent arbiter --message "<короткий вердикт>\\nCHANGES_REQUESTED"\n\n'
+            "Вердикт APPROVED — если основная задача выполнена, можно мержить.\n"
+            "Вердикт CHANGES_REQUESTED — если есть критичные проблемы, задача пойдёт на доработку.\n"
         )
 
         return "\n\n".join(parts)
@@ -319,6 +335,7 @@ class DispatchIntegration:
         runtime: str = "auto",
         repo_root: str | None = None,
         agent: str | None = None,
+        task_id: int | None = None,
     ) -> dict[str, Any]:
         cmd = [
             DISPATCH_BIN,
@@ -330,6 +347,8 @@ class DispatchIntegration:
             "--wait-sec",
             "0",
         ]
+        if task_id is not None:
+            cmd.extend(["--to", f"+1{task_id:010d}"])
         if repo_root:
             cmd.extend(["--repo-root", repo_root])
 

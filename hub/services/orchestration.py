@@ -40,7 +40,9 @@ async def dispatch_task(
         branch=branch,
     )
     runtime = task.get("runtime", "auto")
-    result = await plugins.dispatch.submit_task(message, runtime=runtime)
+    result = await plugins.dispatch.submit_task(
+        message, runtime=runtime, task_id=task_id
+    )
     job_id = result.get("job_id")
 
     if job_id:
@@ -74,6 +76,7 @@ async def dispatch_review(
         message,
         runtime=config.REVIEW_RUNTIME,
         agent=config.REVIEW_AGENT,
+        task_id=task_id,
     )
     review_job_id = result.get("job_id")
     if review_job_id:
@@ -115,7 +118,9 @@ async def dispatch_fix(
         branch=task.get("branch", ""),
     )
     runtime = task.get("runtime", "auto")
-    result = await plugins.dispatch.submit_task(message, runtime=runtime)
+    result = await plugins.dispatch.submit_task(
+        message, runtime=runtime, task_id=task_id
+    )
     job_id = result.get("job_id")
     if job_id:
         await repo.update_task(
@@ -190,6 +195,7 @@ async def dispatch_arbiter(
         message,
         runtime=config.ARBITER_RUNTIME,
         agent=config.ARBITER_AGENT,
+        task_id=task_id,
     )
     arbiter_job_id = result.get("job_id")
     if arbiter_job_id:
@@ -225,7 +231,9 @@ async def dispatch_ci_fix(
         branch=task.get("branch", ""),
     )
     runtime = task.get("runtime", "auto")
-    result = await plugins.dispatch.submit_task(message, runtime=runtime)
+    result = await plugins.dispatch.submit_task(
+        message, runtime=runtime, task_id=task_id
+    )
     job_id = result.get("job_id")
     if job_id:
         branch = task.get("branch")

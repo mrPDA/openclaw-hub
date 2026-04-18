@@ -49,6 +49,18 @@ def _conv_commit_type(title: str) -> str:
     return "feat"
 
 
+def _git_env() -> dict[str, str]:
+    """Build env dict with SSH key for GitHub push."""
+    import os
+    from pathlib import Path
+
+    env = os.environ.copy()
+    ssh_key = Path.home() / ".ssh" / "id_ed25519"
+    if ssh_key.exists():
+        env["GIT_SSH_COMMAND"] = f"ssh -i {ssh_key} -o StrictHostKeyChecking=accept-new"
+    return env
+
+
 async def _run(
     *cmd: str,
     cwd: str | None = None,
@@ -60,6 +72,7 @@ async def _run(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
+        env=_git_env(),
     )
     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     rc = proc.returncode or 0
@@ -88,10 +101,18 @@ async def _reject_broken_files(repo: str) -> list[str]:
     repo_path = pathlib.Path(repo)
 
     rc, diff_out, _ = await _git(
-        "diff", "--name-only", "--diff-filter=ACMR", repo=repo, check=False,
+        "diff",
+        "--name-only",
+        "--diff-filter=ACMR",
+        repo=repo,
+        check=False,
     )
     rc2, untracked, _ = await _git(
-        "ls-files", "--others", "--exclude-standard", repo=repo, check=False,
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        repo=repo,
+        check=False,
     )
     candidates = (diff_out + "\n" + untracked).strip().splitlines()
 
@@ -110,12 +131,18 @@ async def _reject_broken_files(repo: str) -> list[str]:
         if len(content) > 500 and line_count <= 1:
             log.warning(
                 "auto_commit: BROKEN file %s (%d chars, %d lines) — reverting",
-                rel, len(content), line_count,
+                rel,
+                len(content),
+                line_count,
             )
             await _git("checkout", "--", rel, repo=repo, check=False)
             if fpath.exists():
                 rc3, st, _ = await _git(
-                    "ls-files", "--error-unmatch", rel, repo=repo, check=False,
+                    "ls-files",
+                    "--error-unmatch",
+                    rel,
+                    repo=repo,
+                    check=False,
                 )
                 if rc3 != 0:
                     fpath.unlink(missing_ok=True)
@@ -130,8 +157,18 @@ def _parse_pr_number(gh_output: str) -> int | None:
 
 async def _find_pr_for_branch(branch: str, repo: str | None = None) -> int | None:
     rc, out, _ = await _gh(
-        "pr", "list", "--repo", REPO_NAME, "--head", branch,
-        "--state", "open", "--json", "number", repo=repo, check=False,
+        "pr",
+        "list",
+        "--repo",
+        REPO_NAME,
+        "--head",
+        branch,
+        "--state",
+        "open",
+        "--json",
+        "number",
+        repo=repo,
+        check=False,
     )
     if rc == 0 and out:
         try:
@@ -201,7 +238,9 @@ class GitOpsIntegration:
         if reverted:
             log.warning(
                 "auto_commit: reverted %d broken file(s) for task #%d: %s",
-                len(reverted), task_id, ", ".join(reverted),
+                len(reverted),
+                task_id,
+                ", ".join(reverted),
             )
 
         rc, status, _ = await _git("status", "--porcelain", repo=repo, check=False)
@@ -239,35 +278,53 @@ class GitOpsIntegration:
         repo = repo or _repo_root()
 
         await _git("checkout", branch, repo=repo, check=False)
+        await _git("fetch", "origin", "main", repo=repo, check=False)
 
         rc, merge_base, _ = await _git(
-            "merge-base", "main", branch, repo=repo, check=False,
+            "merge-base",
+            "origin/main",
+            branch,
+            repo=repo,
+            check=False,
         )
         if rc != 0 or not merge_base.strip():
             log.warning("squash_branch: cannot find merge-base for %s", branch)
             return False
 
         rc, rev_count, _ = await _git(
-            "rev-list", "--count", f"{merge_base.strip()}..HEAD",
-            repo=repo, check=False,
+            "rev-list",
+            "--count",
+            f"{merge_base.strip()}..HEAD",
+            repo=repo,
+            check=False,
         )
         if rc != 0 or int(rev_count.strip() or "0") <= 1:
             log.info("squash_branch: %s has <=1 commit, skip squash", branch)
             return True
 
         rc, _, err = await _git(
-            "reset", "--soft", merge_base.strip(), repo=repo, check=False,
+            "reset",
+            "--soft",
+            merge_base.strip(),
+            repo=repo,
+            check=False,
         )
         if rc != 0:
             log.error("squash_branch: reset failed for %s: %s", branch, err)
             return False
 
         ctype = _conv_commit_type(title) if title else "feat"
-        msg = f"{ctype}(task): {title} (#{task_id})"
+        slug = _slugify(title, max_len=60)
+        msg = f"{ctype}(task): {slug} (#{task_id})"
 
         await _git("add", "-A", repo=repo)
         rc, _, err = await _git(
-            "commit", "-m", msg, "--no-verify", repo=repo, check=False,
+            "commit",
+            "-m",
+            msg,
+            "--no-verify",
+            repo=repo,
+            check=False,
         )
         if rc != 0:
             log.error("squash_branch: commit failed for %s: %s", branch, err)
@@ -308,9 +365,21 @@ class GitOpsIntegration:
         )
 
         rc, out, err = await _gh(
-            "pr", "create", "--repo", REPO_NAME, "--base", "main",
-            "--head", branch, "--title", pr_title, "--body", body,
-            repo=repo, check=False, timeout=30,
+            "pr",
+            "create",
+            "--repo",
+            REPO_NAME,
+            "--base",
+            "main",
+            "--head",
+            branch,
+            "--title",
+            pr_title,
+            "--body",
+            body,
+            repo=repo,
+            check=False,
+            timeout=30,
         )
         if rc != 0:
             if "already exists" in err:
@@ -327,16 +396,21 @@ class GitOpsIntegration:
         self,
         pr_number: int,
         branch: str,
-        max_log_chars: int = 4000,
+        max_log_chars: int = 12000,
         repo: str | None = None,
     ) -> dict[str, Any]:
-        result: dict[str, Any] = {
-            "failed_checks": [], "log_summary": "", "run_url": ""
-        }
+        result: dict[str, Any] = {"failed_checks": [], "log_summary": "", "run_url": ""}
 
         rc, out, _ = await _gh(
-            "pr", "checks", str(pr_number), "--repo", REPO_NAME,
-            "--json", "name,state", repo=repo, check=False,
+            "pr",
+            "checks",
+            str(pr_number),
+            "--repo",
+            REPO_NAME,
+            "--json",
+            "name,state",
+            repo=repo,
+            check=False,
         )
         if rc == 0 and out:
             try:
@@ -351,8 +425,18 @@ class GitOpsIntegration:
                 pass
 
         rc, out, _ = await _gh(
-            "run", "list", "--repo", REPO_NAME, "--branch", branch,
-            "--limit", "1", "--json", "databaseId,url", repo=repo, check=False,
+            "run",
+            "list",
+            "--repo",
+            REPO_NAME,
+            "--branch",
+            branch,
+            "--limit",
+            "1",
+            "--json",
+            "databaseId,url,status",
+            repo=repo,
+            check=False,
         )
         run_id = None
         if rc == 0 and out:
@@ -366,8 +450,15 @@ class GitOpsIntegration:
 
         if run_id:
             rc, out, _ = await _gh(
-                "run", "view", str(run_id), "--repo", REPO_NAME,
-                "--log-failed", repo=repo, check=False, timeout=30,
+                "run",
+                "view",
+                str(run_id),
+                "--repo",
+                REPO_NAME,
+                "--log-failed",
+                repo=repo,
+                check=False,
+                timeout=90,
             )
             if rc == 0 and out:
                 if len(out) > max_log_chars:
@@ -379,8 +470,15 @@ class GitOpsIntegration:
 
     async def check_pr_ci(self, pr_number: int, repo: str | None = None) -> str:
         rc, out, _ = await _gh(
-            "pr", "checks", str(pr_number), "--repo", REPO_NAME,
-            "--json", "name,state", repo=repo, check=False,
+            "pr",
+            "checks",
+            str(pr_number),
+            "--repo",
+            REPO_NAME,
+            "--json",
+            "name,state",
+            repo=repo,
+            check=False,
         )
         if rc != 0 or not out:
             return "pending"
@@ -393,22 +491,39 @@ class GitOpsIntegration:
             return "pending"
 
         states = [c.get("state", "").upper() for c in checks]
-        if any(s in ("FAILURE", "ERROR", "ACTION_REQUIRED") for s in states):
-            return "fail"
+        still_running = any(
+            s in ("PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED", "")
+            for s in states
+        )
+        if still_running:
+            return "pending"
         if all(s in ("SUCCESS", "NEUTRAL", "SKIPPED") for s in states):
             return "pass"
+        if any(s in ("FAILURE", "ERROR", "ACTION_REQUIRED") for s in states):
+            return "fail"
         return "pending"
 
     async def merge_pr(
         self, pr_number: int, task_id: int, title: str, repo: str | None = None
     ) -> bool:
         ctype = _conv_commit_type(title)
-        subject = f"{ctype}(task): {title} (#{task_id})"
+        slug = _slugify(title, max_len=60)
+        subject = f"{ctype}(task): {slug} (#{task_id})"
 
         rc, _, err = await _gh(
-            "pr", "merge", str(pr_number), "--repo", REPO_NAME,
-            "--squash", "--admin", "--delete-branch", "--subject", subject,
-            repo=repo, check=False, timeout=30,
+            "pr",
+            "merge",
+            str(pr_number),
+            "--repo",
+            REPO_NAME,
+            "--squash",
+            "--admin",
+            "--delete-branch",
+            "--subject",
+            subject,
+            repo=repo,
+            check=False,
+            timeout=30,
         )
         if rc == 0:
             log.info("Merged PR #%d (squash, admin)", pr_number)

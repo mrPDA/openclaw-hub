@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from fastapi import FastAPI
 
@@ -15,6 +16,11 @@ from hub.integrations.registry import plugins
 log = logging.getLogger("hub")
 
 POLL_INTERVAL = 30  # seconds
+
+CI_GRACE_PERIOD = 180  # wait >=3 min after push before checking CI
+
+_ci_no_pr_retries: dict[int, int] = {}
+_ci_pushed_at: dict[int, float] = {}  # task_id → time.monotonic() of last push
 
 
 async def _poll_running_tasks(app: FastAPI) -> None:
@@ -51,9 +57,46 @@ async def _poll_running_tasks(app: FastAPI) -> None:
                     await services.maybe_destroy_vast(db, task)
                     continue
 
+                has_done = await repo.has_done_updates(db, task["id"])
+                has_blocker = any(
+                    u.get("kind") == "blocker"
+                    for u in [
+                        dict(r) for r in await repo.get_task_updates(db, task["id"])
+                    ]
+                )
+                if has_blocker:
+                    await repo.update_task(
+                        db,
+                        task["id"],
+                        status="needs_decision",
+                        exit_code=job.get("exit_code"),
+                        result_text=job.get("result_text"),
+                    )
+                    await db.commit()
+                    log.info(
+                        "Poll: task #%d → needs_decision (blocker reported)",
+                        task["id"],
+                    )
+                    await services.maybe_destroy_vast(db, task)
+                    continue
+                if not has_done and job_status == "completed":
+                    summary = _extract_agent_summary(
+                        plugins.dispatch.job_log_full(task["job_id"])
+                    )
+                    if summary:
+                        await repo.add_task_update(
+                            db, task["id"], "agent", "done", summary
+                        )
+                        await db.commit()
+                        has_done = True
+                        log.info(
+                            "Poll: task #%d — synthetic done from dispatch log",
+                            task["id"],
+                        )
                 if (
                     task.get("auto_review")
                     and task.get("review_cycle", 0) < config.MAX_REVIEW_CYCLES
+                    and has_done
                 ):
                     branch = task.get("branch")
                     if branch:
@@ -85,9 +128,9 @@ async def _poll_running_tasks(app: FastAPI) -> None:
                         result_text=job.get("result_text"),
                     )
                     await db.commit()
+                    _ci_pushed_at[task["id"]] = time.monotonic()
                     log.info("Poll: task #%d → ci_check (waiting for CI)", task["id"])
                 else:
-                    has_done = await repo.has_done_updates(db, task["id"])
                     next_status = "completed" if has_done else "pending_report"
                     await repo.update_task(
                         db,
@@ -117,13 +160,34 @@ async def _poll_running_tasks(app: FastAPI) -> None:
 
                 updates_rows = await repo.get_task_updates(db, task["id"])
                 updates_list = [dict(r) for r in updates_rows]
+
+                last_rework_at = ""
+                for u in reversed(updates_list):
+                    if (
+                        u.get("agent") == "human"
+                        and u.get("kind") == "status"
+                        and "rework" in u.get("content", "").lower()
+                    ):
+                        last_rework_at = u.get("created_at", "")
+                        break
+
+                recent_updates = (
+                    [
+                        u
+                        for u in updates_list
+                        if u.get("created_at", "") > last_rework_at
+                    ]
+                    if last_rework_at
+                    else updates_list
+                )
+
                 has_alert = any(
                     u.get("kind") == "alert"
                     and "cycle limit" in u.get("content", "").lower()
-                    for u in updates_list
+                    for u in recent_updates
                 )
                 has_arbitration = any(
-                    u.get("kind") == "arbitration" for u in updates_list
+                    u.get("kind") == "arbitration" for u in recent_updates
                 )
 
                 if job_status == "failed":
@@ -208,6 +272,21 @@ async def _poll_running_tasks(app: FastAPI) -> None:
                     log.info("Poll: task #%d review → approved", task["id"])
                     await services.maybe_destroy_vast(db, task)
                 elif verdict == "changes_requested":
+                    review_text = ""
+                    for u in reversed(updates_list):
+                        if u.get("kind") == "review":
+                            review_text = u.get("content", "")
+                            break
+                    if not review_text:
+                        full_log = plugins.dispatch.job_log_full(task["review_job_id"])
+                        if full_log:
+                            review_text = _extract_review_from_log(full_log)
+                    if not review_text:
+                        review_text = (
+                            "Ревьюер запросил изменения, но конкретные замечания "
+                            "не удалось извлечь. Проверь git diff и исправь проблемы."
+                        )
+
                     if task.get("review_cycle", 0) + 1 >= config.MAX_REVIEW_CYCLES:
                         await repo.update_task(
                             db,
@@ -217,21 +296,24 @@ async def _poll_running_tasks(app: FastAPI) -> None:
                         await db.commit()
                         await services.dispatch_arbiter(db, task, updates_list)
                     else:
-                        review_text = ""
-                        for u in reversed(updates_list):
-                            if u.get("kind") == "review":
-                                review_text = u.get("content", "")
-                                break
                         branch = task.get("branch")
                         if branch:
                             await plugins.git_ops.checkout(branch)
                         await services.dispatch_fix(db, task, review_text)
                 else:
-                    log.info(
-                        "Poll: task #%d review job done but no clear verdict, marking completed",
+                    log.warning(
+                        "Poll: task #%d review job done but no clear verdict → needs_decision",
                         task["id"],
                     )
-                    await repo.update_task(db, task["id"], status="completed")
+                    await repo.add_task_update(
+                        db,
+                        task["id"],
+                        "hub",
+                        "alert",
+                        "Review job completed but no clear verdict (APPROVED/CHANGES_REQUESTED). "
+                        "Manual decision required.",
+                    )
+                    await repo.update_task(db, task["id"], status="needs_decision")
                     await db.commit()
                     await services.maybe_destroy_vast(db, task)
 
@@ -252,16 +334,47 @@ async def _poll_running_tasks(app: FastAPI) -> None:
                             await repo.update_task(db, task["id"], pr_number=pr_num)
                             task["pr_number"] = pr_num
                             await db.commit()
+                            _ci_pushed_at[task["id"]] = time.monotonic()
                             log.info(
                                 "Poll: task #%d created PR #%d (was missing)",
                                 task["id"],
                                 pr_num,
                             )
                     if not task.get("pr_number"):
+                        _ci_no_pr_retries[task["id"]] = (
+                            _ci_no_pr_retries.get(task["id"], 0) + 1
+                        )
+                        if _ci_no_pr_retries[task["id"]] >= 3:
+                            log.warning(
+                                "Poll: task #%d ci_check without PR after 3 retries → needs_decision",
+                                task["id"],
+                            )
+                            await repo.add_task_update(
+                                db,
+                                task["id"],
+                                "hub",
+                                "alert",
+                                "Cannot create PR: no commits on branch or push failed. Manual decision required.",
+                            )
+                            await repo.update_task(
+                                db, task["id"], status="needs_decision"
+                            )
+                            await db.commit()
+                            _ci_no_pr_retries.pop(task["id"], None)
+                            await services.maybe_destroy_vast(db, task)
                         continue
+                pushed_at = _ci_pushed_at.get(task["id"], 0.0)
+                if pushed_at and (time.monotonic() - pushed_at) < CI_GRACE_PERIOD:
+                    log.debug(
+                        "Poll: task #%d CI grace period (%ds remaining)",
+                        task["id"],
+                        int(CI_GRACE_PERIOD - (time.monotonic() - pushed_at)),
+                    )
+                    continue
                 ci = await plugins.git_ops.check_pr_ci(task["pr_number"])
                 if ci == "pending":
                     continue
+                _ci_pushed_at.pop(task["id"], None)
                 if ci == "pass":
                     log.info(
                         "Poll: task #%d CI passed on PR #%s, dispatching review",
@@ -294,6 +407,7 @@ async def _poll_running_tasks(app: FastAPI) -> None:
                         )
                         await repo.update_task(db, task["id"], status="needs_decision")
                         await db.commit()
+                        _ci_pushed_at.pop(task["id"], None)
                         log.info(
                             "Poll: task #%d CI fix cycle limit → needs_decision",
                             task["id"],
@@ -328,6 +442,53 @@ async def _poll_running_tasks(app: FastAPI) -> None:
 
         except Exception:
             log.exception("Poll error")
+
+
+def _extract_agent_summary(full_log: str | None) -> str:
+    """Extract a short summary from a dispatch log when the agent didn't call oc-hub update."""
+    if not full_log:
+        return ""
+    import json
+
+    texts: list[str] = []
+    for line in full_log.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if '"text"' in stripped:
+            try:
+                value = stripped.split(":", 1)[1].strip().strip(",")
+                parsed = json.loads(value)
+                if isinstance(parsed, str) and len(parsed) > 30:
+                    texts.append(parsed)
+            except (json.JSONDecodeError, IndexError):
+                pass
+    if texts:
+        return texts[-1][:1500]
+    return ""
+
+
+def _extract_review_from_log(full_log: str) -> str:
+    """Extract reviewer's text from a dispatch log, skipping JSON metadata."""
+    import json
+
+    lines = full_log.split("\n")
+    texts: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith('"text"'):
+            try:
+                value = stripped.split(":", 1)[1].strip().strip(",")
+                parsed = json.loads(value)
+                if isinstance(parsed, str) and len(parsed) > 20:
+                    texts.append(parsed)
+            except (json.JSONDecodeError, IndexError):
+                pass
+    if texts:
+        return texts[-1][:2000]
+    return ""
 
 
 def start_poller(app: FastAPI) -> asyncio.Task[None]:

@@ -89,6 +89,7 @@ class NoopDispatch:
         runtime: str = "auto",
         repo_root: str | None = None,
         agent: str | None = None,
+        task_id: int | None = None,
     ) -> dict[str, Any]:
         return {"error": "dispatch plugin not configured"}
 
@@ -181,6 +182,9 @@ class NoopNotes:
 class NoopVast:
     async def has_active_vast_tasks(self, db: aiosqlite.Connection) -> bool:
         return False
+
+    async def vast_up(self) -> dict[str, Any]:
+        return {"error": "vast plugin not configured"}
 
     async def vast_status(self) -> dict[str, Any]:
         return {"managed": False}

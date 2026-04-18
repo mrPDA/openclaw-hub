@@ -21,7 +21,7 @@ from hub.integrations.registry import plugins
 class MockDispatch(NoopDispatch):
     """Dispatch mock that returns a predictable job_id on submit."""
 
-    async def submit_task(self, message, runtime="auto", repo_root=None, agent=None):
+    async def submit_task(self, message, runtime="auto", repo_root=None, agent=None, task_id=None):
         return {"job_id": "test-job-1"}
 
     def build_enriched_message(self, title, description, updates=None, branch="", breadcrumb=""):
