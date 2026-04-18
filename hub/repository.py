@@ -234,6 +234,27 @@ async def update_task(
     )
 
 
+async def transition_status_if(
+    db: aiosqlite.Connection,
+    task_id: int,
+    *,
+    expected_from: str,
+    new_status: str,
+) -> bool:
+    """Atomically transition ``task.status`` only when the current value
+    matches ``expected_from``. Returns ``True`` if the row was updated.
+
+    Used to close the read/write race in approve/reject/start: a second
+    concurrent caller will see ``rowcount == 0`` and can be rejected with
+    409 Conflict instead of double-processing the task. Review I5.
+    """
+    cur = await db.execute(
+        "UPDATE tasks SET status=?, updated_at=datetime('now') WHERE id=? AND status=?",
+        (new_status, task_id, expected_from),
+    )
+    return (cur.rowcount or 0) > 0
+
+
 async def create_task_full(
     db: aiosqlite.Connection,
     payload: Any,
@@ -251,15 +272,23 @@ async def create_task_full(
     base_kwargs = {
         "title": payload.title,
         "description": payload.description,
-        "runtime": payload.runtime.value if hasattr(payload.runtime, "value") else payload.runtime,
-        "source": payload.source.value if hasattr(payload.source, "value") else payload.source,
+        "runtime": payload.runtime.value
+        if hasattr(payload.runtime, "value")
+        else payload.runtime,
+        "source": payload.source.value
+        if hasattr(payload.source, "value")
+        else payload.source,
         "assigned_agent": payload.agent,
         "rationale": payload.rationale,
         "status": status,
         "auto_review": int(bool(payload.auto_review)),
-        "task_type": payload.task_type.value if hasattr(payload.task_type, "value") else payload.task_type,
+        "task_type": payload.task_type.value
+        if hasattr(payload.task_type, "value")
+        else payload.task_type,
         "parent_id": payload.parent_id,
-        "priority": payload.priority.value if hasattr(payload.priority, "value") else payload.priority,
+        "priority": payload.priority.value
+        if hasattr(payload.priority, "value")
+        else payload.priority,
         "position": position,
     }
     columns = list(base_kwargs) + [k for k in STRUCTURED_TASK_FIELDS if k in structured]
@@ -360,9 +389,7 @@ async def replace_acceptance_criteria(
             raise ValueError(f"duplicate ac_id in payload: {ac.id}")
         seen.add(ac.id)
 
-    await db.execute(
-        "DELETE FROM acceptance_criteria WHERE task_id=?", (task_id,)
-    )
+    await db.execute("DELETE FROM acceptance_criteria WHERE task_id=?", (task_id,))
     for position, ac in enumerate(items):
         kwargs = ac_to_row_kwargs(ac)
         await db.execute(

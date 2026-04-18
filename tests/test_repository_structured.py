@@ -24,7 +24,9 @@ from hub.models import (
 )
 
 
-def _ac(idx: int = 1, *, by: ACVerifiableBy = ACVerifiableBy.test) -> AcceptanceCriterion:
+def _ac(
+    idx: int = 1, *, by: ACVerifiableBy = ACVerifiableBy.test
+) -> AcceptanceCriterion:
     return AcceptanceCriterion(
         id=f"AC-{idx}",
         given=f"given-{idx}",
@@ -151,7 +153,9 @@ async def test_create_task_full_works_with_minimal_payload(db: aiosqlite.Connect
     assert fields["risks"] == []
 
 
-async def test_structured_fields_from_row_dor_passed_coerced_to_bool(db: aiosqlite.Connection):
+async def test_structured_fields_from_row_dor_passed_coerced_to_bool(
+    db: aiosqlite.Connection,
+):
     task_id, _ = await _insert_full_task(db)
     await repo.update_task(db, task_id, dor_passed=1, readiness_score=85)
     await db.commit()
@@ -184,6 +188,41 @@ async def test_update_task_structured_empty_refine_is_noop(db: aiosqlite.Connect
     applied = await repo.update_task_structured(db, task_id, TaskRefine())
     await db.commit()
     assert applied == {}
+
+
+async def test_update_task_structured_bumps_updated_at(
+    db: aiosqlite.Connection,
+):
+    """Regression for review I11: any non-empty structured update must
+    bump tasks.updated_at so pollers and stale-detection logic see the
+    change. An empty refine, on the other hand, is a no-op and must
+    leave updated_at alone."""
+    import asyncio
+
+    task_id, _ = await _insert_full_task(db)
+    before_row = await repo.get_task(db, task_id)
+    before_ts = before_row["updated_at"]
+
+    # SQLite datetime('now') has 1-second resolution; wait so the
+    # difference is observable.
+    await asyncio.sleep(1.1)
+
+    await repo.update_task_structured(db, task_id, TaskRefine(size=TaskSize.XL))
+    await db.commit()
+    after_row = await repo.get_task(db, task_id)
+    assert after_row["updated_at"] > before_ts, (
+        "non-empty update_task_structured must bump updated_at"
+    )
+
+    # Empty refine: same updated_at after another commit cycle.
+    after_first = after_row["updated_at"]
+    await asyncio.sleep(1.1)
+    await repo.update_task_structured(db, task_id, TaskRefine())
+    await db.commit()
+    final_row = await repo.get_task(db, task_id)
+    assert final_row["updated_at"] == after_first, (
+        "empty refine must not bump updated_at (no UPDATE issued)"
+    )
 
 
 async def test_update_task_structured_writes_risks(db: aiosqlite.Connection):

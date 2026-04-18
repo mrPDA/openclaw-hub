@@ -46,6 +46,28 @@ async def _api_patch(path: str, body: dict[str, Any] | None = None) -> Any:
         return resp.json()
 
 
+async def _api_put(path: str, body: Any) -> Any:
+    """PUT for collection-level replace (e.g. acceptance criteria).
+
+    Body may be a list (for replace_acceptance_criteria) or dict.
+    """
+    import httpx
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.put(f"{_hub_url()}{path}", json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def _api_delete(path: str) -> None:
+    """DELETE returning 204 / no body."""
+    import httpx
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.delete(f"{_hub_url()}{path}")
+        resp.raise_for_status()
+
+
 def _format_task(t: dict[str, Any]) -> str:
     src = (
         f" [agent:{t.get('assigned_agent', '')}]" if t.get("source") == "agent" else ""
@@ -537,6 +559,104 @@ async def hub_list_decisions(limit: int = 10) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Vast.ai instance management
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def hub_vast_up() -> str:
+    """Create or reuse a Vast.ai GPU instance with vLLM model.
+
+    Provisions a GPU instance, bootstraps vLLM with Qwen3-Coder, and waits
+    until the model is healthy. Takes 2-15 minutes depending on whether an
+    instance already exists.
+
+    Returns the OpenAI-compatible API endpoint. After this tool completes,
+    write the returned base_url to ~/.openclaw/vast-upstream.json on Mac
+    so the local proxy picks it up automatically.
+    """
+    import httpx
+
+    async with httpx.AsyncClient(timeout=1200) as client:
+        resp = await client.post(f"{_hub_url()}/api/vast/up")
+        resp.raise_for_status()
+        result = resp.json()
+
+    if result.get("error"):
+        return f"Failed to create Vast instance: {result['error']}"
+
+    public_ip = result.get("public_ip")
+    api_port = result.get("api_port")
+    model_id = result.get("model_id", "")
+    base_url = result.get("base_url") or (
+        f"http://{public_ip}:{api_port}/v1" if public_ip and api_port else "unknown"
+    )
+    # Strip /v1 suffix for proxy config — proxy forwards path as-is,
+    # so Cursor's requests to localhost:8741/v1/... go to upstream/v1/...
+    proxy_upstream = base_url.rstrip("/")
+    if proxy_upstream.endswith("/v1"):
+        proxy_upstream = proxy_upstream[:-3]
+    hourly = result.get("hourly_rate", "?")
+
+    parts = [
+        "Vast.ai instance is UP and healthy.",
+        f"  Instance:  #{result.get('instance_id', '?')}",
+        f"  Rate:      ${hourly}/hr",
+        f"  Model:     {model_id}",
+        f"  Endpoint:  {base_url}",
+        "",
+        "UPDATE LOCAL PROXY by running this command on Mac:",
+        f'  echo \'{{"base_url":"{proxy_upstream}"}}\' > ~/.openclaw/vast-upstream.json',
+        "",
+        "Local proxy → http://localhost:8741/v1",
+        "Cursor model ready to use.",
+    ]
+    return "\n".join(parts)
+
+
+@mcp.tool()
+async def hub_vast_status() -> str:
+    """Check the status of the current Vast.ai GPU instance."""
+    result = await _api_get("/api/vast/status")
+
+    if not result.get("managed"):
+        return "No active Vast.ai instance."
+
+    parts = [
+        f"Vast instance #{result.get('instance_id')} — {result.get('status', 'unknown')}",
+        f"  Hourly rate: ${result.get('hourly_rate', '?')}/hr",
+        f"  Base URL:    {result.get('base_url', 'N/A')}",
+        f"  Public IP:   {result.get('public_ip', 'N/A')}",
+        f"  Last used:   {result.get('last_used_at', 'N/A')}",
+    ]
+    if result.get("degraded"):
+        parts.append(
+            "  WARNING: Status degraded (API lookup failed, using cached state)"
+        )
+    return "\n".join(parts)
+
+
+@mcp.tool()
+async def hub_vast_down() -> str:
+    """Destroy the active Vast.ai GPU instance to stop billing."""
+    import httpx
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(f"{_hub_url()}/api/vast/down")
+        resp.raise_for_status()
+        result = resp.json()
+
+    if result.get("destroyed"):
+        return f"Vast instance #{result.get('instance_id', '?')} destroyed. Billing stopped."
+    return f"No instance to destroy. {result.get('reason', result.get('error', ''))}"
+
+
+# ---------------------------------------------------------------------------
+# Misc
+# ---------------------------------------------------------------------------
+
+
 @mcp.tool()
 async def hub_dispatch_jobs(limit: int = 15) -> str:
     """List recent oc-dev-dispatch jobs (raw dispatch state).
@@ -555,6 +675,263 @@ async def hub_dispatch_jobs(limit: int = 15) -> str:
             f"session={j.get('session_id', '')}"
         )
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Structured task form (#43): refine, ACs, risks, readiness
+# ---------------------------------------------------------------------------
+#
+# Design (agreed in #46 follow-up): one MCP tool per business operation,
+# mirroring the REST API one-to-one. CLI (#42) is a separate UX surface;
+# both reuse the same backend services (services.refinement.*) so the
+# behavior never drifts.
+
+
+def _format_ac(ac: dict[str, Any]) -> str:
+    test = f"\n   Test: {ac['test_ref']}" if ac.get("test_ref") else ""
+    return (
+        f"{ac['id']} [{ac.get('verifiable_by', '?')}]\n"
+        f"  Given: {ac.get('given', '')}\n"
+        f"   When: {ac.get('when', '')}\n"
+        f"   Then: {ac.get('then', '')}" + test
+    )
+
+
+def _format_readiness(report: dict[str, Any], task_id: int) -> str:
+    parts = [
+        f"Task #{task_id} readiness: score={report['score']} "
+        f"dor_passed={'yes' if report['dor_passed'] else 'no'}"
+    ]
+    missing = report.get("missing_required") or []
+    if missing:
+        parts.append("  Missing required: " + ", ".join(missing))
+    risks = report.get("risks") or []
+    if risks:
+        risk_brief = ", ".join(
+            f"{r.get('kind')}:{r.get('severity')}" for r in risks[:5]
+        )
+        parts.append(f"  Risks ({len(risks)}): {risk_brief}")
+    recs = report.get("recommendations") or []
+    blocking = [r for r in recs if r.get("severity") == "blocking"]
+    if blocking:
+        parts.append("  Blocking recommendations:")
+        for r in blocking[:5]:
+            parts.append(f"    - {r.get('field')}: {r.get('message')}")
+    elif recs:
+        parts.append(
+            f"  ({len(recs)} non-blocking suggestions; call hub_get_readiness with explain=true for full JSON)"
+        )
+    return "\n".join(parts)
+
+
+@mcp.tool()
+async def hub_refine_task(
+    task_id: int,
+    work_type: str | None = None,
+    class_of_service: str | None = None,
+    size: str | None = None,
+    wip_tag: str | None = None,
+    due_date: str | None = None,
+    user_story: str | None = None,
+    problem_statement: str | None = None,
+    business_value: str | None = None,
+    technical_hints: str | None = None,
+    scope_in: list[str] | None = None,
+    scope_out: list[str] | None = None,
+    affected_areas: list[str] | None = None,
+    validation_commands: list[str] | None = None,
+    constraints: list[str] | None = None,
+    assumptions: list[str] | None = None,
+    out_of_scope_for_review: list[str] | None = None,
+) -> str:
+    """PATCH a task's structured fields (Definition of Ready inputs).
+
+    Only fields you pass are written. Omit a parameter to leave the
+    existing value untouched. Lists fully replace the existing list.
+
+    Args:
+        task_id: Task to refine.
+        work_type: feature | bug | refactor | chore | docs | spike | incident
+        class_of_service: standard | expedite | fixed_date | intangible
+        size: XS | S | M | L | XL
+        wip_tag: feature_work | bugfix | tech_debt | support
+        due_date: ISO date string (YYYY-MM-DD) for fixed_date COS.
+        user_story: "As a <role>, I want <X> so that <Y>".
+        problem_statement: What's broken / why this work exists.
+        business_value: Outcome / why it matters.
+        technical_hints: Hints, references, suggested approach.
+        scope_in: In-scope items (REPLACES the list).
+        scope_out: Out-of-scope items (REPLACES the list).
+        affected_areas: Modules/paths impacted (REPLACES).
+        validation_commands: Commands proving it works (REPLACES).
+        constraints: Hard constraints (REPLACES).
+        assumptions: Assumptions made (REPLACES).
+        out_of_scope_for_review: Things the reviewer should ignore (REPLACES).
+    """
+    body: dict[str, Any] = {}
+    for key, val in (
+        ("work_type", work_type),
+        ("class_of_service", class_of_service),
+        ("size", size),
+        ("wip_tag", wip_tag),
+        ("due_date", due_date),
+        ("user_story", user_story),
+        ("problem_statement", problem_statement),
+        ("business_value", business_value),
+        ("technical_hints", technical_hints),
+        ("scope_in", scope_in),
+        ("scope_out", scope_out),
+        ("affected_areas", affected_areas),
+        ("validation_commands", validation_commands),
+        ("constraints", constraints),
+        ("assumptions", assumptions),
+        ("out_of_scope_for_review", out_of_scope_for_review),
+    ):
+        if val is not None:
+            body[key] = val
+    if not body:
+        return (
+            "Nothing to refine: pass at least one structured field. "
+            "Use hub_replace_acceptance_criteria for AC changes."
+        )
+    result = await _api_post(f"/api/tasks/{task_id}/refine", body)
+    cols = result.get("updated_columns") or {}
+    if cols:
+        return f"Task #{task_id} refined. Updated: {', '.join(sorted(cols))}"
+    return f"Task #{task_id} refine accepted (no column changes detected)"
+
+
+@mcp.tool()
+async def hub_list_acceptance_criteria(task_id: int) -> str:
+    """List all acceptance criteria (Given/When/Then scenarios) for a task."""
+    items = await _api_get(f"/api/tasks/{task_id}/acceptance_criteria")
+    if not items:
+        return f"Task #{task_id} has no acceptance criteria."
+    return "\n\n".join(_format_ac(ac) for ac in items)
+
+
+@mcp.tool()
+async def hub_add_acceptance_criterion(
+    task_id: int,
+    ac_id: str,
+    given: str,
+    when: str,
+    then: str,
+    verifiable_by: str = "test",
+    test_ref: str = "",
+) -> str:
+    """Add a single Given/When/Then acceptance criterion to a task.
+
+    Args:
+        task_id: Target task.
+        ac_id: Stable identifier for this AC (e.g. "AC-1"). Must be
+            unique within the task — duplicate ids return HTTP 409.
+        given: Precondition / context.
+        when: Action / event.
+        then: Observable outcome.
+        verifiable_by: How the AC is verified: test | manual | log_check | ui_check.
+        test_ref: Optional pointer to the test (e.g. tests/x.py::test_y).
+    """
+    body: dict[str, Any] = {
+        "id": ac_id,
+        "given": given,
+        "when": when,
+        "then": then,
+        "verifiable_by": verifiable_by,
+    }
+    if test_ref:
+        body["test_ref"] = test_ref
+    await _api_post(f"/api/tasks/{task_id}/acceptance_criteria", body)
+    return f"Added {ac_id} to task #{task_id}"
+
+
+@mcp.tool()
+async def hub_replace_acceptance_criteria(
+    task_id: int,
+    items: list[dict[str, Any]],
+) -> str:
+    """Atomically replace ALL acceptance criteria for a task.
+
+    Pass an empty list to clear them. Each item must have id, given,
+    when, then, verifiable_by; test_ref is optional. The whole replace
+    is one transaction — partial application is impossible.
+
+    Args:
+        task_id: Target task.
+        items: New acceptance criteria. Empty list clears them.
+    """
+    result = await _api_put(f"/api/tasks/{task_id}/acceptance_criteria", items)
+    count = len(result) if isinstance(result, list) else len(items)
+    return f"Task #{task_id} now has {count} acceptance criteria"
+
+
+@mcp.tool()
+async def hub_delete_acceptance_criterion(task_id: int, ac_id: str) -> str:
+    """Delete a single acceptance criterion by its id."""
+    import urllib.parse
+
+    safe_id = urllib.parse.quote(ac_id, safe="")
+    await _api_delete(f"/api/tasks/{task_id}/acceptance_criteria/{safe_id}")
+    return f"Deleted {ac_id} from task #{task_id}"
+
+
+@mcp.tool()
+async def hub_add_risk(
+    task_id: int,
+    kind: str,
+    severity: str,
+    description: str,
+    mitigation: str,
+) -> str:
+    """Append a risk to a task.
+
+    Implementation note: TaskRefine.risks fully REPLACES the list, so we
+    read-modify-write through /refine. There's a benign race window if
+    two callers add risks concurrently — last writer wins. A dedicated
+    POST endpoint would close it; revisit if it becomes a real problem.
+
+    Args:
+        task_id: Target task.
+        kind: ambiguous_requirements | large_scope | external_dependency |
+            data_migration | breaking_change | security | performance |
+            unknown_unknowns
+        severity: low | medium | high
+        description: One-line risk description.
+        mitigation: How we plan to handle / reduce it.
+    """
+    task = await _api_get(f"/api/tasks/{task_id}")
+    current = list(task.get("risks") or [])
+    current.append(
+        {
+            "kind": kind,
+            "severity": severity,
+            "description": description,
+            "mitigation": mitigation,
+        }
+    )
+    await _api_post(f"/api/tasks/{task_id}/refine", {"risks": current})
+    return f"Risk '{kind}:{severity}' added to task #{task_id} (total: {len(current)})"
+
+
+@mcp.tool()
+async def hub_get_readiness(task_id: int, explain: bool = False) -> str:
+    """Get the Definition of Ready report and readiness score for a task.
+
+    Returns a compact human-readable summary. Set explain=true to receive
+    the full ReadinessReport JSON including the per-component score
+    breakdown — useful when debugging why a task isn't approving.
+
+    Args:
+        task_id: Target task.
+        explain: If true, dump the full JSON report instead of a summary.
+    """
+    path = f"/api/tasks/{task_id}/readiness"
+    if explain:
+        path += "?explain=true"
+    report = await _api_get(path)
+    if explain:
+        return json.dumps(report, ensure_ascii=False, indent=2)
+    return _format_readiness(report, task_id)
 
 
 def main():

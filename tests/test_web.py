@@ -61,9 +61,11 @@ async def test_web_approve_task(client: AsyncClient):
     task_id = create.json()["id"]
     assert create.json()["status"] == "draft"
 
+    # Web-approve goes through the same DoR gate as the API. The task
+    # has no structured fields filled in, so request force=true.
     resp = await client.post(
         f"/tasks/{task_id}/web-approve",
-        data={"comment": "ok"},
+        data={"comment": "ok", "force": "true"},
         follow_redirects=False,
     )
     assert resp.status_code == 303

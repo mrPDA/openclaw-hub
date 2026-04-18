@@ -252,9 +252,19 @@ async def web_approve_task(
     comment: str = Form(""),
     run: bool = Form(False),
     runtime: str = Form("auto"),
+    force: bool = Form(False),
 ):
+    """Web-approve passes ``force`` through to the DoR gate (#40).
+
+    UI buttons that should bypass DoR (e.g. an explicit 'Force approve'
+    affordance in the sidebar) set ``force=true`` as a hidden form value;
+    plain 'Approve' keeps the gate active.
+    """
     body = TaskApprove(
-        comment=comment, run=run, runtime=RuntimeChoice(runtime) if runtime else None
+        comment=comment,
+        run=run,
+        runtime=RuntimeChoice(runtime) if runtime else None,
+        force=force,
     )
     await services.approve_task(_db(request), task_id, body)
     if _is_htmx(request):

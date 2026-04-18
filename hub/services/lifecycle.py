@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from hub import config
 from hub import db as db_module
 from hub import repository as repo
-from hub.db import log_activity
+from hub.db import log_activity, structured_fields_from_row
 from hub.integrations.registry import plugins
 from hub.models import (
     TaskAnswer,
@@ -47,6 +47,14 @@ def row_to_task(
     if d.get("job_id"):
         log_tail = plugins.dispatch.job_log_tail(d["job_id"], max_lines=20)
     upd_list = [TaskUpdateView(**dict(u)) for u in updates] if updates else None
+    # Structured task form fields (Epic #32) are stored on tasks row but
+    # need JSON-decoding for list columns. structured_fields_from_row
+    # returns only the keys present in the row, so absent columns fall
+    # back to TaskView defaults — safe for both legacy and new rows.
+    structured = structured_fields_from_row(row)
+    # Drop None values so model defaults (e.g. "" for str, [] for list)
+    # win over a NULL DB column instead of being overwritten with None.
+    structured_clean = {k: v for k, v in structured.items() if v is not None}
     return TaskView(
         id=d["id"],
         title=d["title"],
@@ -73,6 +81,7 @@ def row_to_task(
         pr_number=d.get("pr_number"),
         created_at=d["created_at"],
         updated_at=d["updated_at"],
+        **structured_clean,
     )
 
 
@@ -126,20 +135,11 @@ async def create_task(db: aiosqlite.Connection, body: TaskCreate) -> TaskView:
     if body.task_type == TaskType.subtask and body.auto_review:
         body.auto_review = False
 
-    task_id = await repo.create_task(
-        db,
-        title=body.title,
-        description=body.description,
-        runtime=body.runtime.value,
-        source=body.source.value,
-        assigned_agent=body.agent,
-        rationale=body.rationale,
-        status=initial_status,
-        auto_review=body.auto_review,
-        task_type=body.task_type.value,
-        parent_id=body.parent_id,
-        priority=body.priority.value,
-    )
+    # Use the structured-aware insert so all fields from TaskCreate
+    # (work_type, scope_in/out, user_story, etc.) actually persist.
+    # The legacy repo.create_task only knew about the original columns
+    # and silently dropped the rest of the payload (#46 / review C1).
+    task_id = await repo.create_task_full(db, body, status=initial_status)
     await db.commit()
 
     result: dict[str, Any] = {}
@@ -163,7 +163,15 @@ async def approve_task(
     task_id: int,
     body: TaskApprove | None = None,
 ) -> TaskView:
-    """Approve a draft task, optionally dispatching it."""
+    """Approve a draft task, optionally dispatching it.
+
+    The approval is gated by the Definition of Ready (#36). A task with
+    unsatisfied required checks cannot be approved unless ``body.force``
+    is explicitly set — force-approvals are allowed for genuine edge
+    cases (production incidents, exploratory drafts) but are logged as
+    ``alert`` updates and tagged in the activity log so the audit trail
+    stays intact.
+    """
     row = await repo.get_task(db, task_id)
     if not row:
         raise HTTPException(404, "task not found")
@@ -176,7 +184,66 @@ async def approve_task(
 
     body = body or TaskApprove()
 
-    if body.comment:
+    # --- DoR gate -----------------------------------------------------------
+    # Import locally to avoid a circular dependency (services.recommendations
+    # imports from .readiness which imports from .dor; lifecycle is called
+    # from many modules and should stay lightweight at import time).
+    from hub.services.recommendations import (
+        calculate_readiness_with_recommendations,
+    )
+
+    readiness = await calculate_readiness_with_recommendations(db, task_id)
+    dor_override_summary: str | None = None
+    if not readiness.dor_passed:
+        # Use the report's required-only list. Filtering dor_checks ourselves
+        # would mistakenly include checks that failed but aren't required
+        # for this work_type (review I1).
+        missing = readiness.missing_required
+        if not body.force:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "dor_failed",
+                    "task_id": task_id,
+                    "score": readiness.score,
+                    "missing_required": missing,
+                    "recommendations": [
+                        {
+                            "field": r.field,
+                            "severity": r.severity,
+                            "message": r.message,
+                            "expected_score_delta": r.expected_score_delta,
+                        }
+                        for r in readiness.recommendations
+                    ],
+                    "hint": "pass force=true to override the DoR gate",
+                },
+            )
+        dor_override_summary = ", ".join(missing) or "<unknown>"
+        log.warning(
+            "DoR override on approve for task #%s (missing: %s)",
+            task_id,
+            dor_override_summary,
+        )
+        override_message = (
+            f"Approve override: DoR failed (missing: {dor_override_summary}); "
+            f"approved with force=true"
+        )
+        if body.comment:
+            override_message += f". Comment: {body.comment}"
+        await repo.add_task_update(db, task_id, "", "alert", override_message)
+    elif body.force:
+        # DoR passed but the caller still set force=true. Record the
+        # explicit human override so post-mortems can spot "we forced
+        # this even though we didn't strictly need to" — review I7.
+        force_message = (
+            "Approve override: force=true requested (DoR was already passing)"
+        )
+        if body.comment:
+            force_message += f". Comment: {body.comment}"
+        await repo.add_task_update(db, task_id, "", "alert", force_message)
+
+    if body.comment and dor_override_summary is None and not body.force:
         await repo.add_task_update(
             db, task_id, "", "status", f"Approved: {body.comment}"
         )
@@ -185,17 +252,33 @@ async def approve_task(
         await repo.update_task(db, task_id, runtime=body.runtime.value)
         task["runtime"] = body.runtime.value
 
-    await repo.update_task(db, task_id, status="open")
+    # Atomic conditional transition: a concurrent second approve will see
+    # ``rowcount == 0`` and get a 409 instead of being silently double-
+    # processed. Even though aiosqlite serializes a shared connection
+    # today, this guards us when someone moves to a per-request connection
+    # or a pool. Review I5.
+    transitioned = await repo.transition_status_if(
+        db, task_id, expected_from="draft", new_status="open"
+    )
     await db.commit()
+    if not transitioned:
+        raise HTTPException(409, "task is no longer draft (concurrent approve?)")
 
     if body.run:
         task["status"] = "open"
         await dispatch_task(db, task_id, task)
 
+    activity_suffix = ""
+    if body.run:
+        activity_suffix = f" (run={body.run})"
+    if dor_override_summary is not None:
+        activity_suffix += f" (force=true, missing={dor_override_summary})"
+    elif body.force:
+        activity_suffix += " (force=true)"
     await log_activity(
         db,
         "task_approved",
-        f"Task #{task_id} approved" + (f" (run={body.run})" if body.run else ""),
+        f"Task #{task_id} approved{activity_suffix}",
     )
 
     row = await repo.get_task(db, task_id)
@@ -399,7 +482,9 @@ async def decide_task(
             max_cycles=config.MAX_REVIEW_CYCLES,
         )
         runtime = task.get("runtime", "auto")
-        result = await plugins.dispatch.submit_task(message, runtime=runtime)
+        result = await plugins.dispatch.submit_task(
+            message, runtime=runtime, task_id=task_id
+        )
         job_id = result.get("job_id")
         if job_id:
             await repo.update_task(db, task_id, status="fix_requested", job_id=job_id)

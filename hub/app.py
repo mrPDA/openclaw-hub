@@ -9,7 +9,7 @@ from typing import Any
 
 import aiosqlite
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -19,14 +19,17 @@ from hub import repository as repo
 from hub.db import get_db
 from hub.integrations.registry import plugins
 from hub.models import (
+    AcceptanceCriterion,
     ActivityItem,
     DashboardData,
+    ReadinessReport,
     TaskAnswer,
     TaskApprove,
     TaskContextView,
     TaskCreate,
     TaskDecide,
     TaskQuestion,
+    TaskRefine,
     TaskReject,
     TaskReorder,
     TaskSource,
@@ -35,6 +38,10 @@ from hub.models import (
     TaskUpdateCreate,
     TaskUpdateView,
     TaskView,
+)
+from hub.services.refinement import (
+    DuplicateAcceptanceCriterionError,
+    TaskNotFoundError,
 )
 from hub.poller import start_poller
 from hub.web import router as web_router
@@ -157,7 +164,16 @@ async def api_task_tree(task_id: int, request: Request):
 
 @app.get("/api/tasks/{task_id}/context", response_model=TaskContextView)
 async def api_task_context(task_id: int, request: Request):
-    """Get full context for an agent: breadcrumb, siblings, progress, n4l history."""
+    """Full developer contract for a task (#41).
+
+    Returns a single envelope covering:
+    - legacy navigation: breadcrumb, siblings, children, progress
+    - the current task as a fully-hydrated TaskView (structured fields + ACs)
+    - a compact readiness summary (score, dor_passed, blocking recommendations)
+    - parent_goal: the nearest epic/feature in the hierarchy, so the work is
+      grounded in a larger business goal even for deeply-nested subtasks
+    - context_text: an LLM-friendly markdown digest of the same data
+    """
     db = _db(request)
     row = await repo.get_task(db, task_id)
     if not row:
@@ -173,25 +189,107 @@ async def api_task_context(task_id: int, request: Request):
         sib_rows = await repo.get_siblings(db, task["parent_id"], task_id)
         siblings = [dict(r) for r in sib_rows]
 
+    # --- Hydrate the current task with ACs (structured fields already
+    # come out of row_to_task after #39).
+    task_view = services.row_to_task(row)
+    ac_rows = await repo.list_acceptance_criteria(db, task_id)
+    task_view.acceptance_criteria = [services.row_to_ac(r) for r in ac_rows]
+
+    # --- Readiness summary. Reuse the same calculator as /readiness so
+    # /context and /readiness can never drift.
+    readiness_full = await services.get_readiness(db, task_id, explain=False)
+    # Required-only list comes straight from ReadinessReport (review I1);
+    # do NOT recompute it from dor_checks — the latter contains every
+    # check, including those optional for the current work_type.
+    missing_required = readiness_full.missing_required
+    blocking_recommendations = [
+        r for r in readiness_full.recommendations if r.severity == "blocking"
+    ][:5]
+    readiness_summary = {
+        "score": readiness_full.score,
+        "dor_passed": readiness_full.dor_passed,
+        "missing_required": missing_required,
+        "blocking_recommendations": [r.model_dump() for r in blocking_recommendations],
+    }
+
+    # --- Parent goal: nearest ancestor of type epic/feature. The
+    # breadcrumb already includes the current task as its last element;
+    # iterate in reverse, skip self, and stop at the first match.
+    parent_goal: dict[str, Any] | None = None
+    for node in reversed(breadcrumb[:-1]):  # exclude current task
+        if node.get("task_type") in ("epic", "feature"):
+            goal_row = await repo.get_task(db, node["id"])
+            if goal_row is not None:
+                goal_task = dict(goal_row)
+                parent_goal = {
+                    "id": goal_task["id"],
+                    "task_type": goal_task.get("task_type", "task"),
+                    "title": goal_task.get("title", ""),
+                    "problem_statement": goal_task.get("problem_statement") or "",
+                    "business_value": goal_task.get("business_value") or "",
+                }
+            break
+
+    # --- Human/LLM digest. Structure matters: keep stable section headers
+    # so downstream prompts can grep/extract predictably.
     breadcrumb_str = " > ".join(
         f"{c['task_type'].capitalize()}: {c['title']} (#{c['id']})" for c in breadcrumb
     )
-
-    context_lines = ["## Current Work Context", f"Path: {breadcrumb_str}"]
-    context_lines.append(
-        f"Type: {task.get('task_type', 'task')} | Status: {task['status']} | Priority: {task.get('priority', 'medium')}"
+    lines = ["## Current Work Context", f"Path: {breadcrumb_str}"]
+    lines.append(
+        f"Type: {task.get('task_type', 'task')} | Status: {task['status']} "
+        f"| Priority: {task.get('priority', 'medium')}"
     )
-
     if progress:
-        context_lines.append(
-            f"Progress: {progress['completed']}/{progress['total']} completed ({progress['percent']}%)"
+        lines.append(
+            f"Progress: {progress['completed']}/{progress['total']} "
+            f"completed ({progress['percent']}%)"
         )
     if siblings:
         sib_strs = [f"{s['title']} (#{s['id']}/{s['status']})" for s in siblings[:5]]
-        context_lines.append(f"Siblings: {', '.join(sib_strs)}")
+        lines.append(f"Siblings: {', '.join(sib_strs)}")
     if children:
         child_strs = [f"{c['title']} (#{c['id']}/{c['status']})" for c in children[:8]]
-        context_lines.append(f"Children: {', '.join(child_strs)}")
+        lines.append(f"Children: {', '.join(child_strs)}")
+    if parent_goal:
+        lines.append(
+            f"Parent goal: {parent_goal['task_type'].capitalize()} "
+            f"#{parent_goal['id']} — {parent_goal['title']}"
+        )
+        if parent_goal["problem_statement"]:
+            lines.append(f"  Problem: {parent_goal['problem_statement']}")
+        if parent_goal["business_value"]:
+            lines.append(f"  Value: {parent_goal['business_value']}")
+    if task_view.user_story:
+        lines.append(f"User story: {task_view.user_story}")
+    if task_view.problem_statement:
+        lines.append(f"Problem: {task_view.problem_statement}")
+    if task_view.business_value:
+        lines.append(f"Value: {task_view.business_value}")
+    if task_view.scope_in:
+        lines.append(f"In-scope: {', '.join(task_view.scope_in)}")
+    if task_view.scope_out:
+        lines.append(f"Out-of-scope: {', '.join(task_view.scope_out)}")
+    if task_view.validation_commands:
+        lines.append("Validation: " + " && ".join(task_view.validation_commands))
+    if task_view.acceptance_criteria:
+        ac_ids = ", ".join(ac.id for ac in task_view.acceptance_criteria)
+        lines.append(
+            f"Acceptance criteria ({len(task_view.acceptance_criteria)}): {ac_ids}"
+        )
+    if task_view.risks:
+        # Use .value so the digest reads as 'security:high', not
+        # 'RiskKind.security:RiskSeverity.high' (review I4).
+        risk_brief = ", ".join(
+            f"{r.kind.value}:{r.severity.value}" for r in task_view.risks[:5]
+        )
+        lines.append(f"Risks ({len(task_view.risks)}): {risk_brief}")
+    lines.append(
+        f"Readiness: score={readiness_summary['score']} "
+        f"dor_passed={'yes' if readiness_summary['dor_passed'] else 'no'}"
+    )
+    if missing_required:
+        lines.append(f"  Missing required: {', '.join(missing_required)}")
 
     return {
         "task_id": task_id,
@@ -199,7 +297,10 @@ async def api_task_context(task_id: int, request: Request):
         "siblings": siblings,
         "children": children,
         "progress": progress,
-        "context_text": "\n".join(context_lines),
+        "context_text": "\n".join(lines),
+        "task": task_view,
+        "readiness": readiness_summary,
+        "parent_goal": parent_goal,
     }
 
 
@@ -272,6 +373,119 @@ async def api_list_task_updates(task_id: int, request: Request):
 @app.post("/api/tasks/{task_id}/refresh", response_model=TaskView)
 async def api_refresh_task(task_id: int, request: Request):
     return await services.refresh_task(_db(request), task_id)
+
+
+# ---------------------------------------------------------------------------
+# REST API — Structured form, refinement, readiness (Epic #32)
+# ---------------------------------------------------------------------------
+
+
+def _not_found_to_http(exc: TaskNotFoundError) -> HTTPException:
+    return HTTPException(status.HTTP_404_NOT_FOUND, str(exc))
+
+
+def _duplicate_to_http(
+    exc: DuplicateAcceptanceCriterionError, code: int
+) -> HTTPException:
+    return HTTPException(code, str(exc))
+
+
+@app.post("/api/tasks/{task_id}/refine", response_model=TaskView)
+async def api_refine_task(task_id: int, body: TaskRefine, request: Request):
+    """PATCH-style update of structured fields and (optionally) ACs.
+
+    - Omitted fields are left untouched.
+    - Passing ``acceptance_criteria=[]`` deliberately clears the list.
+    - On duplicate ac_id within the payload returns 422.
+    """
+    db = _db(request)
+    try:
+        await services.refine_task(db, task_id, body)
+    except TaskNotFoundError as exc:
+        raise _not_found_to_http(exc) from exc
+    except DuplicateAcceptanceCriterionError as exc:
+        raise _duplicate_to_http(exc, 422) from exc
+
+    row = await repo.get_task(db, task_id)
+    updates = await repo.get_task_updates(db, task_id)
+    task_view = services.row_to_task(row, updates=updates)
+    return await services.enrich_task_view(db, task_view)
+
+
+@app.get(
+    "/api/tasks/{task_id}/acceptance_criteria",
+    response_model=list[AcceptanceCriterion],
+)
+async def api_list_acceptance_criteria(task_id: int, request: Request):
+    try:
+        return await services.list_acceptance_criteria(_db(request), task_id)
+    except TaskNotFoundError as exc:
+        raise _not_found_to_http(exc) from exc
+
+
+@app.post(
+    "/api/tasks/{task_id}/acceptance_criteria",
+    response_model=AcceptanceCriterion,
+    status_code=status.HTTP_201_CREATED,
+)
+async def api_add_acceptance_criterion(
+    task_id: int, body: AcceptanceCriterion, request: Request
+):
+    """Append one AC. Returns 409 if ``id`` collides with an existing one."""
+    try:
+        return await services.add_acceptance_criterion(_db(request), task_id, body)
+    except TaskNotFoundError as exc:
+        raise _not_found_to_http(exc) from exc
+    except DuplicateAcceptanceCriterionError as exc:
+        raise _duplicate_to_http(exc, status.HTTP_409_CONFLICT) from exc
+
+
+@app.put(
+    "/api/tasks/{task_id}/acceptance_criteria",
+    response_model=list[AcceptanceCriterion],
+)
+async def api_replace_acceptance_criteria(
+    task_id: int, body: list[AcceptanceCriterion], request: Request
+):
+    """Atomic replace of the AC list. Returns 422 on duplicate ids in payload."""
+    try:
+        return await services.replace_acceptance_criteria(_db(request), task_id, body)
+    except TaskNotFoundError as exc:
+        raise _not_found_to_http(exc) from exc
+    except DuplicateAcceptanceCriterionError as exc:
+        raise _duplicate_to_http(exc, 422) from exc
+
+
+@app.delete(
+    "/api/tasks/{task_id}/acceptance_criteria/{ac_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+async def api_delete_acceptance_criterion(task_id: int, ac_id: str, request: Request):
+    try:
+        removed = await services.delete_acceptance_criterion(
+            _db(request), task_id, ac_id
+        )
+    except TaskNotFoundError as exc:
+        raise _not_found_to_http(exc) from exc
+    if not removed:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"acceptance criterion {ac_id!r} not found for task {task_id}",
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get("/api/tasks/{task_id}/readiness", response_model=ReadinessReport)
+async def api_task_readiness(
+    task_id: int,
+    request: Request,
+    explain: bool = Query(default=False),
+):
+    try:
+        return await services.get_readiness(_db(request), task_id, explain=explain)
+    except TaskNotFoundError as exc:
+        raise _not_found_to_http(exc) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +581,26 @@ async def api_dispatch_jobs(limit: int = Query(default=30, le=100)):
 @app.get("/api/transcripts", response_model=list[dict[str, Any]])
 async def api_transcripts(limit: int = Query(default=10, le=30)):
     return plugins.transcripts.list_recent_transcripts(limit)
+
+
+# ---------------------------------------------------------------------------
+# Vast.ai instance management
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/vast/up")
+async def api_vast_up():
+    return await plugins.vast.vast_up()
+
+
+@app.get("/api/vast/status")
+async def api_vast_status():
+    return await plugins.vast.vast_status()
+
+
+@app.post("/api/vast/down")
+async def api_vast_down():
+    return await plugins.vast.vast_down()
 
 
 # ---------------------------------------------------------------------------

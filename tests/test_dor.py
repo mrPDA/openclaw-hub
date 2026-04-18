@@ -79,7 +79,9 @@ def test_string_fields_fail_when_blank_or_whitespace(value):
 
 
 def test_count_based_checks():
-    result = evaluate_from_data(**_empty_kwargs(scope_in_count=2, validation_count=1, ac_count=3))
+    result = evaluate_from_data(
+        **_empty_kwargs(scope_in_count=2, validation_count=1, ac_count=3)
+    )
     by_key = {c.key: c for c in result.checks}
     assert by_key["has_scope_in"].passed is True
     assert "2" in by_key["has_scope_in"].detail
@@ -142,30 +144,65 @@ def test_chore_does_not_require_user_story_or_acs():
     assert by_key["has_user_story"].passed is False
 
 
-def test_spike_requires_only_problem_statement_and_size():
-    result = evaluate_from_data(
+def test_spike_requires_problem_statement_size_and_acceptance_criteria():
+    """Spike must declare a completion criterion (AC) — see review fix #1.3."""
+    # Without AC the spike is not ready: no way to know when it ends.
+    result_no_ac = evaluate_from_data(
         **_empty_kwargs(
             work_type=WorkType.spike.value,
             problem_statement="explore lib X",
             size="S",
         )
     )
-    assert result.passed is True
+    assert result_no_ac.passed is False
+    assert "has_acceptance_criteria" in result_no_ac.missing_required
+
+    # With AC it passes.
+    result_ok = evaluate_from_data(
+        **_empty_kwargs(
+            work_type=WorkType.spike.value,
+            problem_statement="explore lib X",
+            size="S",
+            ac_count=1,
+        )
+    )
+    assert result_ok.passed is True
 
 
-def test_incident_does_not_require_size():
-    result = evaluate_from_data(
+def test_incident_requires_acceptance_criteria_and_does_not_require_size():
+    """Incident: explicit "fixed when" criterion is mandatory — see #1.1.
+
+    Incidents still skip size on purpose (urgency over estimation).
+    """
+    # Without AC: not ready.
+    result_no_ac = evaluate_from_data(
         **_empty_kwargs(
             work_type=WorkType.incident.value,
             problem_statement="API 5xx spike",
             validation_count=1,
         )
     )
-    assert result.passed is True
-    assert "has_size" not in result.missing_required
+    assert result_no_ac.passed is False
+    assert "has_acceptance_criteria" in result_no_ac.missing_required
+
+    # With AC + problem_statement + validation: ready, and size is still optional.
+    result_ok = evaluate_from_data(
+        **_empty_kwargs(
+            work_type=WorkType.incident.value,
+            problem_statement="API 5xx spike",
+            validation_count=1,
+            ac_count=1,
+        )
+    )
+    assert result_ok.passed is True
+    assert "has_size" not in result_ok.missing_required
 
 
-def test_bug_requires_problem_statement_but_not_user_story():
+def test_bug_requires_business_value_and_problem_statement():
+    """Bug profile now requires business_value (see review fix #1.2).
+
+    Without it, a $1M-customer P1 cannot be told apart from cosmetic noise.
+    """
     result = evaluate_from_data(
         **_empty_kwargs(
             work_type=WorkType.bug.value,
@@ -176,25 +213,53 @@ def test_bug_requires_problem_statement_but_not_user_story():
             ac_count=1,
         )
     )
-    # missing problem_statement
     assert result.passed is False
-    assert result.missing_required == frozenset({"has_problem_statement"})
+    assert result.missing_required == frozenset(
+        {"has_problem_statement", "has_business_value"}
+    )
+
+
+def test_refactor_requires_wip_tag():
+    """Refactor must carry wip_tag for capacity tracking — see review fix #1.5."""
+    # Filled everything except wip_tag → still fails because of #1.5.
+    result = evaluate_from_data(
+        **_empty_kwargs(
+            work_type=WorkType.refactor.value,
+            problem_statement="ps",
+            scope_in_count=1,
+            validation_count=1,
+            size="S",
+            ac_count=1,
+        )
+    )
+    assert result.passed is False
+    assert result.missing_required == frozenset({"has_wip_tag"})
+
+    # Add wip_tag → passes.
+    result_ok = evaluate_from_data(
+        **_empty_kwargs(
+            work_type=WorkType.refactor.value,
+            problem_statement="ps",
+            scope_in_count=1,
+            validation_count=1,
+            size="S",
+            wip_tag="tech_debt",
+            ac_count=1,
+        )
+    )
+    assert result_ok.passed is True
 
 
 def test_unknown_work_type_falls_back_to_feature_profile():
     result = evaluate_from_data(**_empty_kwargs(work_type="not-a-real-type"))
     assert result.passed is False
-    assert (
-        result.missing_required == DOR_REQUIRED_BY_WORK_TYPE[WorkType.feature.value]
-    )
+    assert result.missing_required == DOR_REQUIRED_BY_WORK_TYPE[WorkType.feature.value]
 
 
 def test_none_work_type_falls_back_to_feature_profile():
     result = evaluate_from_data(**_empty_kwargs(work_type=None))
     assert result.passed is False
-    assert (
-        result.missing_required == DOR_REQUIRED_BY_WORK_TYPE[WorkType.feature.value]
-    )
+    assert result.missing_required == DOR_REQUIRED_BY_WORK_TYPE[WorkType.feature.value]
 
 
 def test_dor_evaluation_passed_property_independent_of_optional_checks():

@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class TaskStatus(str, Enum):
@@ -278,6 +278,25 @@ class TaskRefine(BaseModel):
     risks: list[TaskRisk] | None = None
     acceptance_criteria: list[AcceptanceCriterion] | None = None
 
+    @model_validator(mode="after")
+    def _ac_ids_must_be_unique(self) -> "TaskRefine":
+        """Catch duplicate AC ids at parse time so they surface as 422
+        BEFORE we touch the DB and partially apply structured-field
+        updates (review I12). The repository would catch this too, but
+        only after a wasted roundtrip plus a SAVEPOINT rollback.
+        """
+        if self.acceptance_criteria is None:
+            return self
+        seen: set[str] = set()
+        dups: list[str] = []
+        for ac in self.acceptance_criteria:
+            if ac.id in seen:
+                dups.append(ac.id)
+            seen.add(ac.id)
+        if dups:
+            raise ValueError(f"duplicate acceptance criterion ids: {sorted(set(dups))}")
+        return self
+
 
 class DoRCheckItem(BaseModel):
     """Single Definition of Ready check result."""
@@ -301,11 +320,20 @@ class Recommendation(BaseModel):
 
 
 class ReadinessReport(BaseModel):
-    """Result of a deterministic (non-LLM) readiness analysis for a task."""
+    """Result of a deterministic (non-LLM) readiness analysis for a task.
+
+    ``missing_required`` is a sorted list of DoR check keys that BOTH
+    failed AND are required for the task's work_type. Consumers must
+    use this field instead of filtering ``dor_checks`` themselves —
+    otherwise they'll mistakenly include optional checks that happen
+    to be unsatisfied for the given work_type (e.g. ``has_user_story``
+    on a bug). See review I1 for context.
+    """
 
     score: int = Field(..., ge=0, le=100)
     dor_passed: bool
     dor_checks: list[DoRCheckItem] = Field(default_factory=list)
+    missing_required: list[str] = Field(default_factory=list)
     risks: list[TaskRisk] = Field(default_factory=list)
     recommendations: list[Recommendation] = Field(default_factory=list)
     explain: list[dict[str, Any]] | None = None
@@ -413,8 +441,40 @@ class TaskTreeNode(BaseModel):
     children: list[TaskTreeNode] = []
 
 
+class ContextReadinessSummary(BaseModel):
+    """Compact readiness view embedded in /context.
+
+    Purpose: give the Developer agent just enough signal to decide whether
+    to start — full breakdown is available via GET /readiness?explain=true.
+    """
+
+    score: int = Field(..., ge=0, le=100)
+    dor_passed: bool
+    missing_required: list[str] = Field(default_factory=list)
+    blocking_recommendations: list[Recommendation] = Field(default_factory=list)
+
+
+class ContextParentGoal(BaseModel):
+    """Nearest non-task ancestor (epic/feature) that grounds the work."""
+
+    id: int
+    task_type: TaskType
+    title: str
+    problem_statement: str = ""
+    business_value: str = ""
+
+
 class TaskContextView(BaseModel):
-    """Response for GET /api/tasks/{task_id}/context."""
+    """Response for GET /api/tasks/{task_id}/context.
+
+    Extended in #41 from a lightweight breadcrumb+siblings envelope into a
+    full "developer contract": the current task with its structured fields,
+    ACs, a compact readiness summary, and the parent goal. ``context_text``
+    remains a human/LLM-friendly markdown digest of the same data.
+
+    The legacy fields (task_id, breadcrumb, siblings, children, progress,
+    context_text) are preserved for backward compatibility.
+    """
 
     task_id: int
     breadcrumb: list[dict[str, Any]]
@@ -422,6 +482,11 @@ class TaskContextView(BaseModel):
     children: list[dict[str, Any]]
     progress: dict[str, Any] | None = None
     context_text: str
+
+    # Added in #41 — full developer contract.
+    task: TaskView | None = None
+    readiness: ContextReadinessSummary | None = None
+    parent_goal: ContextParentGoal | None = None
 
 
 class ActivityItem(BaseModel):

@@ -38,16 +38,33 @@ log = logging.getLogger("hub.services.readiness")
 
 @dataclass(frozen=True)
 class ReadinessConfig:
-    """Tunable scoring parameters. Defaults documented in module docstring."""
+    """Tunable scoring parameters.
+
+    Defaults are calibrated so that:
+
+    - a missing required DoR check is the second-most-painful event
+      (10 pts), behind only a high-severity risk;
+    - a high risk outweighs a missing required check (15 > 10) — the
+      review explicitly flagged the prior 8<10 ordering as inverted
+      severity, so risks now dominate;
+    - missing optional checks are noticeable (5 pts) but not blocking;
+    - the score band [0..base] always renders meaningfully — note that
+      ``ReadinessReport.score`` is hard-clamped to [0, 100] in the
+      Pydantic model, so raising ``base`` above 100 has no UI effect
+      and is intentionally not encouraged.
+
+    See `n4l decision: readiness scoring weights v1` for the rationale
+    and the explicit deferral of weighted/non-linear scoring.
+    """
 
     base: int = 100
     penalty_required: int = 10
-    penalty_optional: int = 2
+    penalty_optional: int = 5
     risk_penalties: dict[RiskSeverity, int] = field(
         default_factory=lambda: {
-            RiskSeverity.low: 1,
-            RiskSeverity.medium: 4,
-            RiskSeverity.high: 8,
+            RiskSeverity.low: 3,
+            RiskSeverity.medium: 8,
+            RiskSeverity.high: 15,
         }
     )
 
@@ -124,7 +141,12 @@ def calculate_score_from_data(
             )
         )
 
-    score = max(0, min(config.base, score))
+    # Hard upper bound at 100 because ReadinessReport.score has le=100;
+    # raising config.base above 100 would otherwise blow up Pydantic
+    # validation downstream. Lower bound at 0 so heavy risk penalties
+    # cannot produce a negative score.
+    upper = min(100, config.base)
+    score = max(0, min(upper, score))
     return score, components
 
 
@@ -159,10 +181,17 @@ async def calculate_readiness(
     """
     dor = await evaluate_dor(db, task_id)
     row = await repo.get_task(db, task_id)
-    risks_raw = row["risks"] if row is not None and "risks" in row.keys() else None
+    # 'risks' is a guaranteed column post-migrations (review I10).
+    risks_raw = row["risks"] if row is not None else None
     risks = parse_risks_from_row(risks_raw)
 
     score, components = calculate_score_from_data(dor=dor, risks=risks, config=config)
+    # NB: ``dor_passed`` and ``score`` are independent signals.
+    # ``dor_passed`` is the binary gate (all required checks satisfied);
+    # ``score`` reflects DoR + risks. A task can be ``dor_passed=True``
+    # with score < 100 if it carries unmitigated risks — that's by
+    # design, since the score is a refinement signal and the DoR gate
+    # is a hard yes/no.
     return ReadinessReport(
         score=score,
         dor_passed=dor.passed,

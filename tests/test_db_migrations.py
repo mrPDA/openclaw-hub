@@ -82,7 +82,9 @@ async def test_structured_task_columns_present():
         ("risks", "'[]'"),
     ],
 )
-async def test_structured_columns_have_safe_defaults(column: str, expected_default: str):
+async def test_structured_columns_have_safe_defaults(
+    column: str, expected_default: str
+):
     conn = await _make_db()
     try:
         cols = await _table_columns(conn, "tasks")
@@ -94,8 +96,16 @@ async def test_structured_columns_have_safe_defaults(column: str, expected_defau
 
 @pytest.mark.parametrize(
     "column",
-    ["size", "wip_tag", "due_date", "readiness_score", "dor_passed",
-     "ready_at", "started_at", "completed_at"],
+    [
+        "size",
+        "wip_tag",
+        "due_date",
+        "readiness_score",
+        "dor_passed",
+        "ready_at",
+        "started_at",
+        "completed_at",
+    ],
 )
 async def test_optional_columns_are_nullable(column: str):
     conn = await _make_db()
@@ -111,8 +121,16 @@ async def test_acceptance_criteria_table_created():
     try:
         cols = await _table_columns(conn, "acceptance_criteria")
         expected = {
-            "id", "task_id", "ac_id", "given", "when_clause", "then_clause",
-            "verifiable_by", "test_ref", "position", "created_at",
+            "id",
+            "task_id",
+            "ac_id",
+            "given",
+            "when_clause",
+            "then_clause",
+            "verifiable_by",
+            "test_ref",
+            "position",
+            "created_at",
         }
         assert expected <= set(cols)
     finally:
@@ -122,9 +140,7 @@ async def test_acceptance_criteria_table_created():
 async def test_acceptance_criteria_unique_per_task():
     conn = await _make_db()
     try:
-        await conn.execute(
-            "INSERT INTO tasks (title, description) VALUES ('t', '')"
-        )
+        await conn.execute("INSERT INTO tasks (title, description) VALUES ('t', '')")
         await conn.commit()
         await conn.execute(
             "INSERT INTO acceptance_criteria "
@@ -146,9 +162,7 @@ async def test_acceptance_criteria_unique_per_task():
 async def test_acceptance_criteria_cascade_on_task_delete():
     conn = await _make_db()
     try:
-        await conn.execute(
-            "INSERT INTO tasks (title, description) VALUES ('t', '')"
-        )
+        await conn.execute("INSERT INTO tasks (title, description) VALUES ('t', '')")
         await conn.execute(
             "INSERT INTO acceptance_criteria "
             "(task_id, ac_id, given, when_clause, then_clause, verifiable_by) "
@@ -165,13 +179,46 @@ async def test_acceptance_criteria_cascade_on_task_delete():
         await conn.close()
 
 
+async def test_failed_migration_is_not_marked_as_applied(monkeypatch):
+    """Regression for review I2: if a migration's SQL fails, _migrate
+    must raise and must NOT record the migration as applied. Otherwise
+    the next start silently skips a broken step and the schema diverges
+    forever."""
+    conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
+    await conn.execute("PRAGMA foreign_keys = ON")
+    await conn.executescript(_SCHEMA)
+    # Inject a deliberately-broken migration.
+    from hub import db as db_module
+
+    bad_migration = (
+        "test_broken_migration",
+        "ALTER TABLE tasks ADD COLUMN ; -- syntax error",
+    )
+    original = list(db_module._MIGRATIONS)
+    monkeypatch.setattr(db_module, "_MIGRATIONS", original + [bad_migration])
+    try:
+        with pytest.raises(Exception):
+            await _migrate(conn)
+        rows = await conn.execute_fetchall(
+            "SELECT name FROM _migrations WHERE name=?", (bad_migration[0],)
+        )
+        assert rows == [], "broken migration must not be recorded as applied"
+    finally:
+        await conn.close()
+
+
 async def test_migrations_are_idempotent():
     conn = await _make_db()
     try:
-        before = await conn.execute_fetchall("SELECT name FROM _migrations ORDER BY name")
+        before = await conn.execute_fetchall(
+            "SELECT name FROM _migrations ORDER BY name"
+        )
         await _migrate(conn)
         await _migrate(conn)
-        after = await conn.execute_fetchall("SELECT name FROM _migrations ORDER BY name")
+        after = await conn.execute_fetchall(
+            "SELECT name FROM _migrations ORDER BY name"
+        )
         assert [r[0] for r in before] == [r[0] for r in after]
         expected_names = {name for name, _ in _MIGRATIONS}
         assert expected_names <= {r[0] for r in after}
@@ -200,7 +247,7 @@ def test_deserialize_str_list_invalid_json_returns_empty():
 
 
 def test_deserialize_str_list_coerces_items_to_str():
-    assert deserialize_str_list("[1, 2, \"x\"]") == ["1", "2", "x"]
+    assert deserialize_str_list('[1, 2, "x"]') == ["1", "2", "x"]
 
 
 def test_serialize_risks_roundtrip():

@@ -167,7 +167,10 @@ _MIGRATIONS: list[tuple[str, str]] = [
         "add_risks_column",
         "ALTER TABLE tasks ADD COLUMN risks TEXT NOT NULL DEFAULT '[]'",
     ),
-    ("add_readiness_score_column", "ALTER TABLE tasks ADD COLUMN readiness_score INTEGER"),
+    (
+        "add_readiness_score_column",
+        "ALTER TABLE tasks ADD COLUMN readiness_score INTEGER",
+    ),
     ("add_dor_passed_column", "ALTER TABLE tasks ADD COLUMN dor_passed INTEGER"),
     ("add_ready_at_column", "ALTER TABLE tasks ADD COLUMN ready_at TEXT"),
     ("add_started_at_column", "ALTER TABLE tasks ADD COLUMN started_at TEXT"),
@@ -282,7 +285,9 @@ STRUCTURED_TASK_FIELDS: tuple[str, ...] = (
 )
 
 
-def structured_fields_to_db(model: Any, *, exclude_unset: bool = False) -> dict[str, Any]:
+def structured_fields_to_db(
+    model: Any, *, exclude_unset: bool = False
+) -> dict[str, Any]:
     """Convert a TaskCreate or TaskRefine model to DB column kwargs.
 
     - enums -> their string values (via Pydantic mode='json')
@@ -330,7 +335,13 @@ def structured_fields_from_row(row: Any) -> dict[str, Any]:
             out[field] = deserialize_str_list(value)
         else:
             out[field] = value
-    for ts_field in ("readiness_score", "dor_passed", "ready_at", "started_at", "completed_at"):
+    for ts_field in (
+        "readiness_score",
+        "dor_passed",
+        "ready_at",
+        "started_at",
+        "completed_at",
+    ):
         if ts_field in keys:
             value = row[ts_field]
             if ts_field == "dor_passed" and value is not None:
@@ -393,10 +404,16 @@ async def _migrate(db: aiosqlite.Connection) -> None:
                         (name,),
                     )
                     continue
+            # Strict-by-default: a failed migration MUST NOT be marked as
+            # applied, otherwise the next start silently skips it and the
+            # schema stays diverged forever (review I2). Re-raise so the
+            # operator sees the failure at boot.
             try:
                 await db.execute(sql)
-            except Exception as exc:
-                log.warning("Migration %s failed: %s", name, exc)
+            except Exception:
+                log.exception("Migration %s failed", name)
+                await db.rollback()
+                raise
             await db.execute(
                 "INSERT OR IGNORE INTO _migrations (name) VALUES (?)", (name,)
             )

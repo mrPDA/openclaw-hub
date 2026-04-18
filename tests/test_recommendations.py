@@ -98,7 +98,9 @@ def test_empty_feature_yields_blocking_per_required_check():
     recs = build_recommendations(dor)
     blocking = [r for r in recs if r.severity == "blocking"]
     assert len(blocking) == len(dor.required)
-    assert all(r.expected_score_delta == DEFAULT_CONFIG.penalty_required for r in blocking)
+    assert all(
+        r.expected_score_delta == DEFAULT_CONFIG.penalty_required for r in blocking
+    )
 
 
 def test_optional_failures_yield_low_severity():
@@ -117,10 +119,14 @@ def test_optional_failures_yield_low_severity():
 
 
 def test_recommendations_sorted_blocking_first():
-    """Mix of blocking and low — blocking must come first."""
+    """Mix of blocking and low — blocking must come first.
+
+    For ``bug`` work_type after fix #1.2: user_story is optional but
+    business_value is required, so we still get a mix of severities.
+    """
     dor = evaluate_from_data(
         **_empty_dor_kwargs(
-            work_type=WorkType.bug.value,  # required = no user_story, no business_value
+            work_type=WorkType.bug.value,
             problem_statement=None,
             scope_in_count=0,
             validation_count=0,
@@ -153,7 +159,9 @@ def test_estimated_minutes_propagated_from_template():
 
 def test_build_recommendations_uses_custom_config():
     cfg = ReadinessConfig(penalty_required=20, penalty_optional=5)
-    dor = evaluate_from_data(**_empty_dor_kwargs(work_type=WorkType.docs.value, scope_in_count=1, size="S"))
+    dor = evaluate_from_data(
+        **_empty_dor_kwargs(work_type=WorkType.docs.value, scope_in_count=1, size="S")
+    )
     recs = build_recommendations(dor, config=cfg)
     for r in recs:
         if r.severity == "blocking":
@@ -230,7 +238,9 @@ async def test_build_for_task_full_returns_empty(db: aiosqlite.Connection):
 # --- end-to-end: report with recommendations ---
 
 
-async def test_calculate_readiness_with_recommendations_perfect(db: aiosqlite.Connection):
+async def test_calculate_readiness_with_recommendations_perfect(
+    db: aiosqlite.Connection,
+):
     task_id = await _make_full_task(db)
     report = await calculate_readiness_with_recommendations(db, task_id)
     assert report.score == 100
@@ -239,7 +249,9 @@ async def test_calculate_readiness_with_recommendations_perfect(db: aiosqlite.Co
     assert report.explain is None
 
 
-async def test_calculate_readiness_with_recommendations_empty_task(db: aiosqlite.Connection):
+async def test_calculate_readiness_with_recommendations_empty_task(
+    db: aiosqlite.Connection,
+):
     task_id = await _make_minimal_task(db)
     report = await calculate_readiness_with_recommendations(db, task_id, explain=True)
     assert report.score < 100
@@ -261,8 +273,10 @@ async def test_calculate_readiness_with_recommendations_includes_risks(
         TaskRefine(
             risks=[
                 TaskRisk(
-                    kind=RiskKind.security, severity=RiskSeverity.high,
-                    description="d", mitigation="m",
+                    kind=RiskKind.security,
+                    severity=RiskSeverity.high,
+                    description="d",
+                    mitigation="m",
                 )
             ]
         ),

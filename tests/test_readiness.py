@@ -101,7 +101,9 @@ def test_optional_check_failures_use_optional_penalty():
     score, components = calculate_score_from_data(dor=dor, risks=[])
     # all required pass for docs, so dor.passed is True
     assert dor.passed is True
-    optional_failed = sum(1 for c in components if c.delta == -DEFAULT_CONFIG.penalty_optional)
+    optional_failed = sum(
+        1 for c in components if c.delta == -DEFAULT_CONFIG.penalty_optional
+    )
     assert optional_failed > 0
     # no required-failed in this scenario
     assert all(c.delta == -DEFAULT_CONFIG.penalty_optional for c in components)
@@ -111,9 +113,24 @@ def test_optional_check_failures_use_optional_penalty():
 def test_risks_subtract_by_severity():
     dor = _all_passed_dor()
     risks = [
-        TaskRisk(kind=RiskKind.security, severity=RiskSeverity.high, description="d", mitigation="m"),
-        TaskRisk(kind=RiskKind.unknown_unknowns, severity=RiskSeverity.medium, description="d", mitigation="m"),
-        TaskRisk(kind=RiskKind.large_scope, severity=RiskSeverity.low, description="d", mitigation="m"),
+        TaskRisk(
+            kind=RiskKind.security,
+            severity=RiskSeverity.high,
+            description="d",
+            mitigation="m",
+        ),
+        TaskRisk(
+            kind=RiskKind.unknown_unknowns,
+            severity=RiskSeverity.medium,
+            description="d",
+            mitigation="m",
+        ),
+        TaskRisk(
+            kind=RiskKind.large_scope,
+            severity=RiskSeverity.low,
+            description="d",
+            mitigation="m",
+        ),
     ]
     score, components = calculate_score_from_data(dor=dor, risks=risks)
     expected = 100 - (
@@ -130,8 +147,10 @@ def test_score_clamped_to_zero_minimum():
     dor = _empty_dor()
     big_risks = [
         TaskRisk(
-            kind=RiskKind.security, severity=RiskSeverity.high,
-            description="d", mitigation="m",
+            kind=RiskKind.security,
+            severity=RiskSeverity.high,
+            description="d",
+            mitigation="m",
         )
     ] * 100
     score, _ = calculate_score_from_data(dor=dor, risks=big_risks)
@@ -146,14 +165,28 @@ def test_score_clamped_to_base_maximum():
     assert score == 100
 
 
+def test_score_clamped_to_100_even_when_config_base_exceeds_100():
+    """ReadinessReport.score has le=100 — see review fix #2.4.
+
+    Without the upper clamp at 100 a misconfigured ``base=200`` would
+    produce score=200 and crash Pydantic validation downstream.
+    """
+    config = ReadinessConfig(base=200, penalty_required=0, penalty_optional=0)
+    dor = _all_passed_dor()
+    score, _ = calculate_score_from_data(dor=dor, risks=[], config=config)
+    assert score == 100
+
+
 def test_components_describe_each_failure():
     dor = _empty_dor()
     _, components = calculate_score_from_data(
         dor=dor,
         risks=[
             TaskRisk(
-                kind=RiskKind.external_dependency, severity=RiskSeverity.medium,
-                description="d", mitigation="m",
+                kind=RiskKind.external_dependency,
+                severity=RiskSeverity.medium,
+                description="d",
+                mitigation="m",
             )
         ],
     )
@@ -174,7 +207,11 @@ def test_custom_config_overrides_defaults():
         base=50,
         penalty_required=1,
         penalty_optional=0,
-        risk_penalties={RiskSeverity.low: 0, RiskSeverity.medium: 0, RiskSeverity.high: 0},
+        risk_penalties={
+            RiskSeverity.low: 0,
+            RiskSeverity.medium: 0,
+            RiskSeverity.high: 0,
+        },
     )
     score, _ = calculate_score_from_data(dor=dor, risks=[], config=cfg)
     assert score == 50 - len(dor.required)
@@ -186,8 +223,10 @@ def test_unknown_risk_severity_does_not_subtract():
     cfg = ReadinessConfig(risk_penalties={RiskSeverity.high: 7})
     risks = [
         TaskRisk(
-            kind=RiskKind.other, severity=RiskSeverity.low,
-            description="d", mitigation="m",
+            kind=RiskKind.other,
+            severity=RiskSeverity.low,
+            description="d",
+            mitigation="m",
         )
     ]
     score, components = calculate_score_from_data(dor=dor, risks=risks, config=cfg)
@@ -224,7 +263,9 @@ async def test_calculate_readiness_perfect_task(db: aiosqlite.Connection):
     assert report.explain is None
 
 
-async def test_calculate_readiness_with_explain_returns_components(db: aiosqlite.Connection):
+async def test_calculate_readiness_with_explain_returns_components(
+    db: aiosqlite.Connection,
+):
     payload = TaskCreate(title="t")
     task_id = await repo.create_task_full(db, payload, status="draft")
     await db.commit()
@@ -239,12 +280,15 @@ async def test_calculate_readiness_with_explain_returns_components(db: aiosqlite
 async def test_calculate_readiness_includes_persisted_risks(db: aiosqlite.Connection):
     task_id = await _make_task_with_full_dor(db)
     await repo.update_task_structured(
-        db, task_id,
+        db,
+        task_id,
         TaskRefine(
             risks=[
                 TaskRisk(
-                    kind=RiskKind.breaking_change, severity=RiskSeverity.high,
-                    description="api change", mitigation="versioned route",
+                    kind=RiskKind.breaking_change,
+                    severity=RiskSeverity.high,
+                    description="api change",
+                    mitigation="versioned route",
                 )
             ]
         ),
@@ -261,9 +305,10 @@ async def test_calculate_readiness_drops_malformed_risks(db: aiosqlite.Connectio
     task_id = await _make_task_with_full_dor(db)
     # Bypass Pydantic and write raw garbage into risks column.
     await repo.update_task(
-        db, task_id,
+        db,
+        task_id,
         risks='[{"kind": "security", "severity": "high", "description": "d", "mitigation": "m"}, '
-              '{"kind": "not-a-real-kind"}, "string", 42]',
+        '{"kind": "not-a-real-kind"}, "string", 42]',
     )
     await db.commit()
 
@@ -273,7 +318,9 @@ async def test_calculate_readiness_drops_malformed_risks(db: aiosqlite.Connectio
     assert report.risks[0].kind == RiskKind.security
 
 
-async def test_calculate_readiness_dor_checks_echoed_in_report(db: aiosqlite.Connection):
+async def test_calculate_readiness_dor_checks_echoed_in_report(
+    db: aiosqlite.Connection,
+):
     task_id = await _make_task_with_full_dor(db)
     report = await calculate_readiness(db, task_id)
     keys = [c.key for c in report.dor_checks]

@@ -12,6 +12,53 @@ async def test_create_task_api(client: AsyncClient):
     assert data["id"] > 0
 
 
+async def test_create_task_persists_structured_fields(client: AsyncClient):
+    """Regression for review C1: POST /api/tasks must persist every
+    structured field accepted by the OpenAPI schema. Previously the
+    payload reached TaskCreate but lifecycle.create_task only forwarded
+    legacy columns to the repo, silently dropping the rest.
+    """
+    payload = {
+        "title": "structured create",
+        "source": "agent",
+        "agent": "test",
+        "work_type": "bug",
+        "class_of_service": "expedite",
+        "size": "L",
+        "wip_tag": "feature_work",
+        "user_story": "as a user, I want X so that Y",
+        "problem_statement": "the problem",
+        "business_value": "the value",
+        "scope_in": ["frontend", "api"],
+        "scope_out": ["backend"],
+        "validation_commands": ["uv run pytest"],
+        "constraints": ["no breaking change"],
+        "assumptions": ["fastapi >= 0.110"],
+        "technical_hints": "use existing helper",
+    }
+    resp = await client.post("/api/tasks", json=payload)
+    assert resp.status_code == 200, resp.text
+    task_id = resp.json()["id"]
+
+    fetched = (await client.get(f"/api/tasks/{task_id}")).json()
+    for key in (
+        "work_type",
+        "class_of_service",
+        "size",
+        "wip_tag",
+        "user_story",
+        "problem_statement",
+        "business_value",
+        "scope_in",
+        "scope_out",
+        "validation_commands",
+        "constraints",
+        "assumptions",
+        "technical_hints",
+    ):
+        assert fetched[key] == payload[key], (key, fetched[key], payload[key])
+
+
 async def test_get_task_api(client: AsyncClient):
     create_resp = await client.post("/api/tasks", json={"title": "Get me"})
     task_id = create_resp.json()["id"]
@@ -34,9 +81,14 @@ async def test_list_tasks_api(client: AsyncClient):
 
 
 async def test_list_tasks_filtered_api(client: AsyncClient):
-    await client.post("/api/tasks", json={
-        "title": "Agent draft", "source": "agent", "agent": "bot",
-    })
+    await client.post(
+        "/api/tasks",
+        json={
+            "title": "Agent draft",
+            "source": "agent",
+            "agent": "bot",
+        },
+    )
     await client.post("/api/tasks", json={"title": "Human open"})
 
     resp = await client.get("/api/tasks", params={"status": "draft"})
@@ -46,21 +98,31 @@ async def test_list_tasks_filtered_api(client: AsyncClient):
 
 
 async def test_approve_api(client: AsyncClient):
-    create_resp = await client.post("/api/tasks", json={
-        "title": "To approve", "source": "agent",
-    })
+    create_resp = await client.post(
+        "/api/tasks",
+        json={
+            "title": "To approve",
+            "source": "agent",
+        },
+    )
     task_id = create_resp.json()["id"]
     assert create_resp.json()["status"] == "draft"
 
-    resp = await client.post(f"/api/tasks/{task_id}/approve")
+    # Legacy tests bypass the DoR gate introduced in #40 — DoR-aware
+    # behavior is covered in test_api_approve_gate.py.
+    resp = await client.post(f"/api/tasks/{task_id}/approve", json={"force": True})
     assert resp.status_code == 200
     assert resp.json()["status"] == "open"
 
 
 async def test_reject_api(client: AsyncClient):
-    create_resp = await client.post("/api/tasks", json={
-        "title": "To reject", "source": "agent",
-    })
+    create_resp = await client.post(
+        "/api/tasks",
+        json={
+            "title": "To reject",
+            "source": "agent",
+        },
+    )
     task_id = create_resp.json()["id"]
 
     resp = await client.post(
@@ -89,9 +151,14 @@ async def test_task_updates_api(client: AsyncClient):
     create_resp = await client.post("/api/tasks", json={"title": "With updates"})
     task_id = create_resp.json()["id"]
 
-    resp = await client.post(f"/api/tasks/{task_id}/updates", json={
-        "agent": "dev", "kind": "status", "content": "Working on it",
-    })
+    resp = await client.post(
+        f"/api/tasks/{task_id}/updates",
+        json={
+            "agent": "dev",
+            "kind": "status",
+            "content": "Working on it",
+        },
+    )
     assert resp.status_code == 200
     assert resp.json()["kind"] == "status"
 
@@ -110,10 +177,13 @@ async def test_activity_api(client: AsyncClient):
 
 
 async def test_create_task_with_type_api(client: AsyncClient):
-    resp = await client.post("/api/tasks", json={
-        "title": "My feature",
-        "task_type": "epic",
-    })
+    resp = await client.post(
+        "/api/tasks",
+        json={
+            "title": "My feature",
+            "task_type": "epic",
+        },
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert data["task_type"] == "epic"
@@ -121,9 +191,13 @@ async def test_create_task_with_type_api(client: AsyncClient):
 
 
 async def test_task_tree_api(client: AsyncClient):
-    epic_resp = await client.post("/api/tasks", json={
-        "title": "Parent epic", "task_type": "epic",
-    })
+    epic_resp = await client.post(
+        "/api/tasks",
+        json={
+            "title": "Parent epic",
+            "task_type": "epic",
+        },
+    )
     epic_id = epic_resp.json()["id"]
 
     resp = await client.get(f"/api/tasks/{epic_id}/tree")
@@ -149,7 +223,8 @@ async def test_reorder_task_api(client: AsyncClient):
     task_id = resp.json()["id"]
 
     resp = await client.patch(
-        f"/api/tasks/{task_id}/reorder", json={"position": 5},
+        f"/api/tasks/{task_id}/reorder",
+        json={"position": 5},
     )
     assert resp.status_code == 200
     assert resp.json()["position"] == 5

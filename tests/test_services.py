@@ -44,7 +44,9 @@ async def test_approve_task(db: aiosqlite.Connection):
     tv = await services.create_task(db, body)
     assert tv.status.value == "draft"
 
-    approved = await services.approve_task(db, tv.id)
+    # force=True bypasses the DoR gate so this test keeps focus on
+    # lifecycle mechanics; gate behavior is covered in test_api_approve_gate.
+    approved = await services.approve_task(db, tv.id, TaskApprove(force=True))
     assert approved.status.value == "open"
 
 
@@ -52,11 +54,14 @@ async def test_approve_with_comment(db: aiosqlite.Connection):
     body = TaskCreate(title="With comment", source="agent")
     tv = await services.create_task(db, body)
 
-    approve_body = TaskApprove(comment="looks good")
+    # Force-approvals record the comment inside the 'Approve override' alert
+    # instead of a separate 'Approved: ...' status update, so assert on the
+    # comment substring rather than the 'Approved' prefix.
+    approve_body = TaskApprove(comment="looks good", force=True)
     approved = await services.approve_task(db, tv.id, approve_body)
     assert approved.status.value == "open"
     assert approved.updates
-    assert any("Approved" in u.content for u in approved.updates)
+    assert any("looks good" in u.content for u in approved.updates)
 
 
 async def test_reject_task(db: aiosqlite.Connection):
@@ -111,7 +116,9 @@ async def test_start_task_with_prior_plan_update(db: aiosqlite.Connection):
     body = TaskCreate(title="Plan via update")
     tv = await services.create_task(db, body)
 
-    await repo.add_task_update(db, tv.id, "dev", "status", "Plan: step-by-step approach")
+    await repo.add_task_update(
+        db, tv.id, "dev", "status", "Plan: step-by-step approach"
+    )
     await db.commit()
 
     started = await services.start_task(db, tv.id)
@@ -120,9 +127,18 @@ async def test_start_task_with_prior_plan_update(db: aiosqlite.Connection):
 
 async def test_ask_question(db: aiosqlite.Connection):
     task_id = await repo.create_task(
-        db, title="Running task", description="", runtime="auto", source="human",
-        assigned_agent="dev", rationale="", status="running", auto_review=True,
-        task_type="task", parent_id=None, priority="medium",
+        db,
+        title="Running task",
+        description="",
+        runtime="auto",
+        source="human",
+        assigned_agent="dev",
+        rationale="",
+        status="running",
+        auto_review=True,
+        task_type="task",
+        parent_id=None,
+        priority="medium",
     )
     await db.commit()
 
@@ -145,9 +161,18 @@ async def test_ask_question_on_non_running_fails(db: aiosqlite.Connection):
 
 async def test_answer_question_no_resume(db: aiosqlite.Connection):
     task_id = await repo.create_task(
-        db, title="Info task", description="", runtime="auto", source="human",
-        assigned_agent="dev", rationale="", status="needs_info", auto_review=True,
-        task_type="task", parent_id=None, priority="medium",
+        db,
+        title="Info task",
+        description="",
+        runtime="auto",
+        source="human",
+        assigned_agent="dev",
+        rationale="",
+        status="needs_info",
+        auto_review=True,
+        task_type="task",
+        parent_id=None,
+        priority="medium",
     )
     await db.commit()
 
@@ -158,9 +183,18 @@ async def test_answer_question_no_resume(db: aiosqlite.Connection):
 
 async def test_answer_question_with_resume(db: aiosqlite.Connection):
     task_id = await repo.create_task(
-        db, title="Resume task", description="", runtime="auto", source="human",
-        assigned_agent="dev", rationale="", status="needs_info", auto_review=True,
-        task_type="task", parent_id=None, priority="medium",
+        db,
+        title="Resume task",
+        description="",
+        runtime="auto",
+        source="human",
+        assigned_agent="dev",
+        rationale="",
+        status="needs_info",
+        auto_review=True,
+        task_type="task",
+        parent_id=None,
+        priority="medium",
     )
     await db.commit()
 
@@ -181,9 +215,18 @@ async def test_answer_non_needs_info_fails(db: aiosqlite.Connection):
 
 async def test_add_update(db: aiosqlite.Connection):
     task_id = await repo.create_task(
-        db, title="Update task", description="", runtime="auto", source="human",
-        assigned_agent="", rationale="", status="running", auto_review=True,
-        task_type="task", parent_id=None, priority="medium",
+        db,
+        title="Update task",
+        description="",
+        runtime="auto",
+        source="human",
+        assigned_agent="",
+        rationale="",
+        status="running",
+        auto_review=True,
+        task_type="task",
+        parent_id=None,
+        priority="medium",
     )
     await db.commit()
 
@@ -195,9 +238,18 @@ async def test_add_update(db: aiosqlite.Connection):
 
 async def test_add_done_update_completes_pending_report(db: aiosqlite.Connection):
     task_id = await repo.create_task(
-        db, title="Pending report", description="", runtime="auto", source="human",
-        assigned_agent="", rationale="", status="pending_report", auto_review=True,
-        task_type="task", parent_id=None, priority="medium",
+        db,
+        title="Pending report",
+        description="",
+        runtime="auto",
+        source="human",
+        assigned_agent="",
+        rationale="",
+        status="pending_report",
+        auto_review=True,
+        task_type="task",
+        parent_id=None,
+        priority="medium",
     )
     await db.commit()
 
@@ -210,9 +262,18 @@ async def test_add_done_update_completes_pending_report(db: aiosqlite.Connection
 
 async def test_lifecycle_approve_from_running_fails(db: aiosqlite.Connection):
     task_id = await repo.create_task(
-        db, title="Running", description="", runtime="auto", source="human",
-        assigned_agent="", rationale="", status="running", auto_review=True,
-        task_type="task", parent_id=None, priority="medium",
+        db,
+        title="Running",
+        description="",
+        runtime="auto",
+        source="human",
+        assigned_agent="",
+        rationale="",
+        status="running",
+        auto_review=True,
+        task_type="task",
+        parent_id=None,
+        priority="medium",
     )
     await db.commit()
 
@@ -223,9 +284,18 @@ async def test_lifecycle_approve_from_running_fails(db: aiosqlite.Connection):
 
 async def test_lifecycle_reject_from_running_fails(db: aiosqlite.Connection):
     task_id = await repo.create_task(
-        db, title="Running", description="", runtime="auto", source="human",
-        assigned_agent="", rationale="", status="running", auto_review=True,
-        task_type="task", parent_id=None, priority="medium",
+        db,
+        title="Running",
+        description="",
+        runtime="auto",
+        source="human",
+        assigned_agent="",
+        rationale="",
+        status="running",
+        auto_review=True,
+        task_type="task",
+        parent_id=None,
+        priority="medium",
     )
     await db.commit()
 
@@ -242,14 +312,32 @@ async def test_approve_nonexistent_task(db: aiosqlite.Connection):
 
 async def test_list_tasks_service(db: aiosqlite.Connection):
     await repo.create_task(
-        db, title="S1", description="", runtime="auto", source="human",
-        assigned_agent="", rationale="", status="open", auto_review=True,
-        task_type="task", parent_id=None, priority="medium",
+        db,
+        title="S1",
+        description="",
+        runtime="auto",
+        source="human",
+        assigned_agent="",
+        rationale="",
+        status="open",
+        auto_review=True,
+        task_type="task",
+        parent_id=None,
+        priority="medium",
     )
     await repo.create_task(
-        db, title="S2", description="", runtime="auto", source="human",
-        assigned_agent="", rationale="", status="running", auto_review=True,
-        task_type="task", parent_id=None, priority="high",
+        db,
+        title="S2",
+        description="",
+        runtime="auto",
+        source="human",
+        assigned_agent="",
+        rationale="",
+        status="running",
+        auto_review=True,
+        task_type="task",
+        parent_id=None,
+        priority="high",
     )
     await db.commit()
 
@@ -263,9 +351,18 @@ async def test_list_tasks_service(db: aiosqlite.Connection):
 
 async def test_row_to_task_conversion(db: aiosqlite.Connection):
     task_id = await repo.create_task(
-        db, title="Conversion test", description="desc", runtime="auto",
-        source="human", assigned_agent="dev", rationale="why", status="open",
-        auto_review=True, task_type="task", parent_id=None, priority="high",
+        db,
+        title="Conversion test",
+        description="desc",
+        runtime="auto",
+        source="human",
+        assigned_agent="dev",
+        rationale="why",
+        status="open",
+        auto_review=True,
+        task_type="task",
+        parent_id=None,
+        priority="high",
     )
     await db.commit()
 
@@ -278,9 +375,18 @@ async def test_row_to_task_conversion(db: aiosqlite.Connection):
 
 async def test_force_complete_task(db: aiosqlite.Connection):
     task_id = await repo.create_task(
-        db, title="PR done", description="", runtime="auto", source="human",
-        assigned_agent="dev", rationale="", status="running", auto_review=True,
-        task_type="task", parent_id=None, priority="medium",
+        db,
+        title="PR done",
+        description="",
+        runtime="auto",
+        source="human",
+        assigned_agent="dev",
+        rationale="",
+        status="running",
+        auto_review=True,
+        task_type="task",
+        parent_id=None,
+        priority="medium",
     )
     await repo.update_task(db, task_id, status="pending_report")
     await db.commit()
@@ -302,9 +408,18 @@ async def test_force_complete_wrong_status(db: aiosqlite.Connection):
 
 async def test_reorder_task(db: aiosqlite.Connection):
     task_id = await repo.create_task(
-        db, title="Reorderable", description="", runtime="auto", source="human",
-        assigned_agent="", rationale="", status="open", auto_review=True,
-        task_type="task", parent_id=None, priority="medium",
+        db,
+        title="Reorderable",
+        description="",
+        runtime="auto",
+        source="human",
+        assigned_agent="",
+        rationale="",
+        status="open",
+        auto_review=True,
+        task_type="task",
+        parent_id=None,
+        priority="medium",
     )
     await db.commit()
 
@@ -315,9 +430,18 @@ async def test_reorder_task(db: aiosqlite.Connection):
 
 async def test_add_update_done_pending_report(db: aiosqlite.Connection):
     task_id = await repo.create_task(
-        db, title="Awaiting report", description="", runtime="auto", source="human",
-        assigned_agent="dev", rationale="", status="running", auto_review=True,
-        task_type="task", parent_id=None, priority="medium",
+        db,
+        title="Awaiting report",
+        description="",
+        runtime="auto",
+        source="human",
+        assigned_agent="dev",
+        rationale="",
+        status="running",
+        auto_review=True,
+        task_type="task",
+        parent_id=None,
+        priority="medium",
     )
     await repo.update_task(db, task_id, status="pending_report")
     await db.commit()
@@ -338,9 +462,18 @@ async def test_add_update_nonexistent_task(db: aiosqlite.Connection):
 
 async def test_refresh_task_no_job(db: aiosqlite.Connection):
     task_id = await repo.create_task(
-        db, title="No job", description="", runtime="auto", source="human",
-        assigned_agent="", rationale="", status="open", auto_review=True,
-        task_type="task", parent_id=None, priority="medium",
+        db,
+        title="No job",
+        description="",
+        runtime="auto",
+        source="human",
+        assigned_agent="",
+        rationale="",
+        status="open",
+        auto_review=True,
+        task_type="task",
+        parent_id=None,
+        priority="medium",
     )
     await db.commit()
 
@@ -354,7 +487,10 @@ async def test_scan_text_for_verdict_approved():
 
 
 async def test_scan_text_for_verdict_changes():
-    assert services.scan_text_for_verdict("changes_requested — needs rework") == "changes_requested"
+    assert (
+        services.scan_text_for_verdict("changes_requested — needs rework")
+        == "changes_requested"
+    )
 
 
 async def test_scan_text_for_verdict_empty():
@@ -363,9 +499,18 @@ async def test_scan_text_for_verdict_empty():
 
 async def test_get_dashboard_data(db: aiosqlite.Connection):
     await repo.create_task(
-        db, title="Active one", description="", runtime="auto", source="human",
-        assigned_agent="", rationale="", status="open", auto_review=True,
-        task_type="task", parent_id=None, priority="medium",
+        db,
+        title="Active one",
+        description="",
+        runtime="auto",
+        source="human",
+        assigned_agent="",
+        rationale="",
+        status="open",
+        auto_review=True,
+        task_type="task",
+        parent_id=None,
+        priority="medium",
     )
     await db.commit()
 
@@ -379,14 +524,32 @@ async def test_get_dashboard_data(db: aiosqlite.Connection):
 
 async def test_get_inbox_data(db: aiosqlite.Connection):
     await repo.create_task(
-        db, title="Draft item", description="", runtime="auto", source="agent",
-        assigned_agent="bot", rationale="", status="draft", auto_review=True,
-        task_type="task", parent_id=None, priority="medium",
+        db,
+        title="Draft item",
+        description="",
+        runtime="auto",
+        source="agent",
+        assigned_agent="bot",
+        rationale="",
+        status="draft",
+        auto_review=True,
+        task_type="task",
+        parent_id=None,
+        priority="medium",
     )
     await repo.create_task(
-        db, title="Question item", description="", runtime="auto", source="human",
-        assigned_agent="dev", rationale="", status="needs_info", auto_review=True,
-        task_type="task", parent_id=None, priority="medium",
+        db,
+        title="Question item",
+        description="",
+        runtime="auto",
+        source="human",
+        assigned_agent="dev",
+        rationale="",
+        status="needs_info",
+        auto_review=True,
+        task_type="task",
+        parent_id=None,
+        priority="medium",
     )
     await db.commit()
 
@@ -399,19 +562,46 @@ async def test_get_inbox_data(db: aiosqlite.Connection):
 
 async def test_list_tasks_with_filters(db: aiosqlite.Connection):
     await repo.create_task(
-        db, title="Epic one", description="", runtime="auto", source="human",
-        assigned_agent="", rationale="", status="open", auto_review=False,
-        task_type="epic", parent_id=None, priority="high",
+        db,
+        title="Epic one",
+        description="",
+        runtime="auto",
+        source="human",
+        assigned_agent="",
+        rationale="",
+        status="open",
+        auto_review=False,
+        task_type="epic",
+        parent_id=None,
+        priority="high",
     )
     await repo.create_task(
-        db, title="Task one", description="", runtime="auto", source="human",
-        assigned_agent="", rationale="", status="open", auto_review=True,
-        task_type="task", parent_id=None, priority="medium",
+        db,
+        title="Task one",
+        description="",
+        runtime="auto",
+        source="human",
+        assigned_agent="",
+        rationale="",
+        status="open",
+        auto_review=True,
+        task_type="task",
+        parent_id=None,
+        priority="medium",
     )
     await repo.create_task(
-        db, title="Task running", description="", runtime="auto", source="human",
-        assigned_agent="", rationale="", status="running", auto_review=True,
-        task_type="task", parent_id=None, priority="medium",
+        db,
+        title="Task running",
+        description="",
+        runtime="auto",
+        source="human",
+        assigned_agent="",
+        rationale="",
+        status="running",
+        auto_review=True,
+        task_type="task",
+        parent_id=None,
+        priority="medium",
     )
     await db.commit()
 

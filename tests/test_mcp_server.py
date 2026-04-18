@@ -5,8 +5,15 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from hub.mcp_server import (
+    hub_add_acceptance_criterion,
+    hub_add_risk,
+    hub_delete_acceptance_criterion,
+    hub_get_readiness,
+    hub_list_acceptance_criteria,
     hub_list_tasks,
     hub_propose_task,
+    hub_refine_task,
+    hub_replace_acceptance_criteria,
     hub_report_done,
     hub_start_task,
     hub_task_status,
@@ -23,6 +30,18 @@ def mock_api_get() -> AsyncMock:
 @pytest.fixture
 def mock_api_post() -> AsyncMock:
     with patch("hub.mcp_server._api_post", new_callable=AsyncMock) as m:
+        yield m
+
+
+@pytest.fixture
+def mock_api_put() -> AsyncMock:
+    with patch("hub.mcp_server._api_put", new_callable=AsyncMock) as m:
+        yield m
+
+
+@pytest.fixture
+def mock_api_delete() -> AsyncMock:
+    with patch("hub.mcp_server._api_delete", new_callable=AsyncMock) as m:
         yield m
 
 
@@ -61,7 +80,9 @@ async def test_hub_list_tasks(mock_api_get: AsyncMock) -> None:
     mock_api_get.assert_awaited_once_with("/api/tasks?limit=20")
 
 
-async def test_hub_task_detail(mock_api_get: AsyncMock, mock_api_post: AsyncMock) -> None:
+async def test_hub_task_detail(
+    mock_api_get: AsyncMock, mock_api_post: AsyncMock
+) -> None:
     mock_api_post.return_value = {}
     mock_api_get.return_value = {
         "id": 42,
@@ -157,3 +178,209 @@ async def test_hub_report_done(mock_api_post: AsyncMock) -> None:
         "kind": "done",
         "content": "Changed: tests. Validation: pytest -q",
     }
+
+
+# ---------------------------------------------------------------------------
+# Structured task form (#43)
+# ---------------------------------------------------------------------------
+
+
+async def test_hub_refine_task_only_includes_provided_fields(
+    mock_api_post: AsyncMock,
+) -> None:
+    mock_api_post.return_value = {"updated_columns": ["work_type", "scope_in"]}
+    msg = await hub_refine_task(
+        42,
+        work_type="bug",
+        scope_in=["auth", "session"],
+        problem_statement="login fails",
+    )
+    assert "Task #42 refined" in msg
+    assert "work_type" in msg and "scope_in" in msg
+    mock_api_post.assert_awaited_once_with(
+        "/api/tasks/42/refine",
+        {
+            "work_type": "bug",
+            "problem_statement": "login fails",
+            "scope_in": ["auth", "session"],
+        },
+    )
+
+
+async def test_hub_refine_task_empty_payload_is_a_no_op(
+    mock_api_post: AsyncMock,
+) -> None:
+    msg = await hub_refine_task(42)
+    assert "Nothing to refine" in msg
+    mock_api_post.assert_not_called()
+
+
+async def test_hub_list_acceptance_criteria_empty(mock_api_get: AsyncMock) -> None:
+    mock_api_get.return_value = []
+    msg = await hub_list_acceptance_criteria(7)
+    assert "no acceptance criteria" in msg
+    mock_api_get.assert_awaited_once_with("/api/tasks/7/acceptance_criteria")
+
+
+async def test_hub_list_acceptance_criteria_renders_items(
+    mock_api_get: AsyncMock,
+) -> None:
+    mock_api_get.return_value = [
+        {
+            "id": "AC-1",
+            "given": "g1",
+            "when": "w1",
+            "then": "t1",
+            "verifiable_by": "test",
+            "test_ref": "tests/x.py::y",
+        },
+        {
+            "id": "AC-2",
+            "given": "g2",
+            "when": "w2",
+            "then": "t2",
+            "verifiable_by": "manual",
+        },
+    ]
+    msg = await hub_list_acceptance_criteria(7)
+    assert "AC-1" in msg and "AC-2" in msg
+    assert "Given: g1" in msg
+    assert "tests/x.py::y" in msg
+
+
+async def test_hub_add_acceptance_criterion_sends_full_body(
+    mock_api_post: AsyncMock,
+) -> None:
+    mock_api_post.return_value = {"id": "AC-1"}
+    msg = await hub_add_acceptance_criterion(
+        task_id=7,
+        ac_id="AC-1",
+        given="g",
+        when="w",
+        then="t",
+        verifiable_by="manual",
+        test_ref="docs/x.md",
+    )
+    assert "Added AC-1 to task #7" in msg
+    mock_api_post.assert_awaited_once_with(
+        "/api/tasks/7/acceptance_criteria",
+        {
+            "id": "AC-1",
+            "given": "g",
+            "when": "w",
+            "then": "t",
+            "verifiable_by": "manual",
+            "test_ref": "docs/x.md",
+        },
+    )
+
+
+async def test_hub_replace_acceptance_criteria_sends_array(
+    mock_api_put: AsyncMock,
+) -> None:
+    items = [
+        {"id": "AC-1", "given": "g", "when": "w", "then": "t", "verifiable_by": "test"},
+        {
+            "id": "AC-2",
+            "given": "g2",
+            "when": "w2",
+            "then": "t2",
+            "verifiable_by": "manual",
+        },
+    ]
+    mock_api_put.return_value = items
+    msg = await hub_replace_acceptance_criteria(7, items)
+    assert "Task #7 now has 2 acceptance criteria" in msg
+    mock_api_put.assert_awaited_once_with("/api/tasks/7/acceptance_criteria", items)
+
+
+async def test_hub_delete_acceptance_criterion_url_encodes_id(
+    mock_api_delete: AsyncMock,
+) -> None:
+    msg = await hub_delete_acceptance_criterion(7, "AC 1/v2")
+    assert "Deleted AC 1/v2 from task #7" in msg
+    mock_api_delete.assert_awaited_once_with(
+        "/api/tasks/7/acceptance_criteria/AC%201%2Fv2"
+    )
+
+
+async def test_hub_add_risk_appends_to_existing(
+    mock_api_get: AsyncMock, mock_api_post: AsyncMock
+) -> None:
+    """`hub_add_risk` is read-modify-write through /refine — existing
+    risks must be preserved, the new one appended."""
+    mock_api_get.return_value = {
+        "id": 7,
+        "risks": [
+            {
+                "kind": "security",
+                "severity": "low",
+                "description": "x",
+                "mitigation": "y",
+            }
+        ],
+    }
+    mock_api_post.return_value = {"updated_columns": ["risks"]}
+    msg = await hub_add_risk(
+        task_id=7,
+        kind="performance",
+        severity="medium",
+        description="slow loop",
+        mitigation="add index",
+    )
+    assert "performance:medium" in msg
+    assert "total: 2" in msg
+    mock_api_get.assert_awaited_once_with("/api/tasks/7")
+    mock_api_post.assert_awaited_once_with(
+        "/api/tasks/7/refine",
+        {
+            "risks": [
+                {
+                    "kind": "security",
+                    "severity": "low",
+                    "description": "x",
+                    "mitigation": "y",
+                },
+                {
+                    "kind": "performance",
+                    "severity": "medium",
+                    "description": "slow loop",
+                    "mitigation": "add index",
+                },
+            ]
+        },
+    )
+
+
+async def test_hub_get_readiness_compact_summary(mock_api_get: AsyncMock) -> None:
+    mock_api_get.return_value = {
+        "score": 65,
+        "dor_passed": False,
+        "missing_required": ["has_problem_statement"],
+        "risks": [{"kind": "security", "severity": "high"}],
+        "recommendations": [
+            {
+                "field": "problem_statement",
+                "severity": "blocking",
+                "message": "Add a problem",
+            }
+        ],
+    }
+    msg = await hub_get_readiness(12)
+    assert "score=65" in msg
+    assert "dor_passed=no" in msg
+    assert "has_problem_statement" in msg
+    assert "Add a problem" in msg
+    mock_api_get.assert_awaited_once_with("/api/tasks/12/readiness")
+
+
+async def test_hub_get_readiness_explain_returns_full_json(
+    mock_api_get: AsyncMock,
+) -> None:
+    payload = {"score": 100, "dor_passed": True, "explain": [{"k": "v"}]}
+    mock_api_get.return_value = payload
+    msg = await hub_get_readiness(12, explain=True)
+    import json as _json
+
+    assert _json.loads(msg) == payload
+    mock_api_get.assert_awaited_once_with("/api/tasks/12/readiness?explain=true")

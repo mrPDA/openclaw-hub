@@ -12,11 +12,14 @@ much a missing piece costs.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from hub import repository as repo
 from hub.db import deserialize_str_list
 from hub.models import DoRCheckItem, WorkType
+
+log = logging.getLogger("hub.services.dor")
 
 # All known DoR check keys. Anything outside this tuple is a typo somewhere.
 DOR_CHECK_KEYS: tuple[str, ...] = (
@@ -34,17 +37,20 @@ DOR_CHECK_KEYS: tuple[str, ...] = (
 #
 # Rationale per profile:
 # - feature: full DoR — most expensive to do wrong, must be ready.
-# - bug: skip user_story + business_value (the bug report itself is the why),
-#   keep AC and validation so a fix is verifiable.
-# - refactor: no user_story / business_value (internal change), keep
-#   problem_statement + AC + validation so we can prove behavior preserved.
+# - bug: skip user_story (problem_statement is the "what broke"), but keep
+#   business_value so we can distinguish a $1M-customer P1 from a cosmetic
+#   glitch. AC + validation are mandatory so the fix is verifiable.
+# - refactor: no user_story / business_value (internal change). wip_tag
+#   required for capacity tracking — refactors usually load tech_debt.
 # - chore: minimal — scope, validation, size. Lots of chores would never
 #   pass full DoR and would just clutter the inbox.
 # - docs: scope + size only. Adding ACs to a doc change is overkill.
-# - spike: time-boxed exploration. Only requires problem_statement + size.
-#   No AC because we don't know the answer yet.
+# - spike: time-boxed exploration. AC required as a proxy for the
+#   completion criterion (e.g. "we have a documented answer to <Q>"); a
+#   first-class ``timebox_hours`` field is on the post-MVP backlog.
 # - incident: must explain what broke (problem_statement) and how we'll
-#   verify the fix (validation_commands). No size — incidents are urgent.
+#   verify the fix (validation_commands + AC). Even under fire, the team
+#   needs an explicit "fixed when" criterion so the postmortem is honest.
 DOR_REQUIRED_BY_WORK_TYPE: dict[str, frozenset[str]] = {
     WorkType.feature.value: frozenset(
         {
@@ -61,6 +67,7 @@ DOR_REQUIRED_BY_WORK_TYPE: dict[str, frozenset[str]] = {
     WorkType.bug.value: frozenset(
         {
             "has_problem_statement",
+            "has_business_value",
             "has_scope_in",
             "has_acceptance_criteria",
             "has_validation_commands",
@@ -75,15 +82,22 @@ DOR_REQUIRED_BY_WORK_TYPE: dict[str, frozenset[str]] = {
             "has_acceptance_criteria",
             "has_validation_commands",
             "has_size",
+            "has_wip_tag",
         }
     ),
     WorkType.chore.value: frozenset(
         {"has_scope_in", "has_validation_commands", "has_size"}
     ),
     WorkType.docs.value: frozenset({"has_scope_in", "has_size"}),
-    WorkType.spike.value: frozenset({"has_problem_statement", "has_size"}),
+    WorkType.spike.value: frozenset(
+        {"has_problem_statement", "has_acceptance_criteria", "has_size"}
+    ),
     WorkType.incident.value: frozenset(
-        {"has_problem_statement", "has_validation_commands"}
+        {
+            "has_problem_statement",
+            "has_acceptance_criteria",
+            "has_validation_commands",
+        }
     ),
 }
 
@@ -112,13 +126,18 @@ def _required_for(work_type: str | None) -> frozenset[str]:
 
     Unknown / missing work_type is treated as 'feature' on purpose:
     strict-by-default avoids accidentally letting under-specified tasks
-    sneak past the gate.
+    sneak past the gate. Unknown values are logged so a missing profile
+    after a WorkType extension does not stay silent in production.
     """
     if not work_type:
         return DOR_REQUIRED_BY_WORK_TYPE[WorkType.feature.value]
-    return DOR_REQUIRED_BY_WORK_TYPE.get(
-        work_type, DOR_REQUIRED_BY_WORK_TYPE[WorkType.feature.value]
-    )
+    profile = DOR_REQUIRED_BY_WORK_TYPE.get(work_type)
+    if profile is None:
+        log.warning(
+            "unknown work_type %r — falling back to 'feature' DoR profile", work_type
+        )
+        return DOR_REQUIRED_BY_WORK_TYPE[WorkType.feature.value]
+    return profile
 
 
 def evaluate_from_data(
@@ -204,27 +223,19 @@ async def evaluate_dor(db, task_id: int) -> DoREvaluation:
         raise ValueError(f"task {task_id} not found")
     acs = await repo.list_acceptance_criteria(db, task_id)
 
+    # The structured columns are guaranteed to exist after migration #46
+    # for tasks-table. With strict migrations (review I2) it's safer to
+    # let a KeyError propagate than to silently return None and hide a
+    # missing-column bug behind a "task is empty" diagnostic.
     return evaluate_from_data(
-        work_type=row["work_type"] if "work_type" in row.keys() else None,
-        user_story=row["user_story"] if "user_story" in row.keys() else None,
-        problem_statement=(
-            row["problem_statement"] if "problem_statement" in row.keys() else None
-        ),
-        business_value=(
-            row["business_value"] if "business_value" in row.keys() else None
-        ),
-        scope_in_count=len(
-            deserialize_str_list(row["scope_in"] if "scope_in" in row.keys() else None)
-        ),
-        validation_count=len(
-            deserialize_str_list(
-                row["validation_commands"]
-                if "validation_commands" in row.keys()
-                else None
-            )
-        ),
-        size=row["size"] if "size" in row.keys() else None,
-        wip_tag=row["wip_tag"] if "wip_tag" in row.keys() else None,
+        work_type=row["work_type"],
+        user_story=row["user_story"],
+        problem_statement=row["problem_statement"],
+        business_value=row["business_value"],
+        scope_in_count=len(deserialize_str_list(row["scope_in"])),
+        validation_count=len(deserialize_str_list(row["validation_commands"])),
+        size=row["size"],
+        wip_tag=row["wip_tag"],
         ac_count=len(acs),
     )
 

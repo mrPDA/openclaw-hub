@@ -37,47 +37,87 @@ from hub.services.readiness import (
 )
 
 # Static templates per check key. ``field`` is the task field a user
-# would edit to satisfy the check; ``minutes`` is a rough effort estimate
-# used purely as a hint, not a scheduling input.
+# would edit to satisfy the check; ``minutes`` is a rough per-item
+# effort hint shown to the author. The total time to refine a task is
+# NOT a sum of these numbers — many recommendations share context and
+# can be answered together. Treat ``minutes`` as a per-step upper
+# bound, never as a scheduling input.
+#
+# Style guide for ``message``:
+#   1) Tell the author what to do (verb-first).
+#   2) Tell them WHY in plain English (no internal jargon like
+#      "verifiable_by", "DoR", "WIP" without expansion).
+#   3) Give a concrete example so the author isn't blocked on form.
 CHECK_RECOMMENDATIONS: dict[str, dict[str, Any]] = {
     "has_user_story": {
         "field": "user_story",
-        "message": "Add a user story in the form: 'As a <role>, I want <action>, so that <value>.'",
+        "message": (
+            "Add a user story so the developer knows who the change is for "
+            "and what outcome they want. Use the form: "
+            "'As a <role>, I want <action>, so that <value>.'"
+        ),
         "minutes": 5,
     },
     "has_problem_statement": {
         "field": "problem_statement",
-        "message": "Describe the problem this task solves and why it matters now.",
+        "message": (
+            "Describe the problem this task solves and why it matters now, "
+            "so the developer can judge trade-offs without asking back."
+        ),
         "minutes": 5,
     },
     "has_business_value": {
         "field": "business_value",
-        "message": "Specify the expected business value (metric, user impact, or strategic outcome).",
+        "message": (
+            "Explain why this task is worth doing right now. One concrete "
+            "outcome is enough — for example: 'unblocks 3 paying customers', "
+            "'cuts onboarding time from 10 to 2 minutes', or "
+            "'eliminates daily on-call alert about queue X'."
+        ),
         "minutes": 3,
     },
     "has_scope_in": {
         "field": "scope_in",
-        "message": "List in-scope items (modules, files, behaviors) so the developer knows where to act.",
+        "message": (
+            "List in-scope items (modules, files, behaviors) so the "
+            "developer knows where to act and where to stop."
+        ),
         "minutes": 5,
     },
     "has_acceptance_criteria": {
         "field": "acceptance_criteria",
-        "message": "Define at least one Given/When/Then acceptance criterion with a verifiable_by method.",
+        "message": (
+            "Define at least one acceptance criterion using Given/When/Then "
+            "and say HOW it will be checked (a test name, a CLI command, a "
+            "manual UI step, or a metric). This is the contract the "
+            "developer will sign off on."
+        ),
         "minutes": 10,
     },
     "has_validation_commands": {
         "field": "validation_commands",
-        "message": "Add commands that verify the change (e.g. 'uv run pytest -q', 'ruff check').",
+        "message": (
+            "Add the commands that prove the change actually works "
+            "(e.g. 'uv run pytest hub/tests/test_dor.py', "
+            "'curl -fsS http://localhost:8765/healthz'). Linters alone "
+            "do not count — pick something that exercises behavior."
+        ),
         "minutes": 3,
     },
     "has_size": {
         "field": "size",
-        "message": "Pick a T-shirt size (XS/S/M/L/XL) so we can plan WIP capacity.",
+        "message": (
+            "Pick a T-shirt size (XS/S/M/L/XL) so we can plan capacity "
+            "and avoid taking on more work than the team can finish."
+        ),
         "minutes": 1,
     },
     "has_wip_tag": {
         "field": "wip_tag",
-        "message": "Set a wip_tag (feature_work / bugfix / tech_debt / support) for capacity tracking.",
+        "message": (
+            "Set a wip_tag (feature_work / bugfix / tech_debt / support) "
+            "so this task counts against the right capacity bucket."
+        ),
         "minutes": 1,
     },
 }
@@ -167,7 +207,8 @@ async def calculate_readiness_with_recommendations(
     """
     dor = await evaluate_dor(db, task_id)
     row = await repo.get_task(db, task_id)
-    risks_raw = row["risks"] if row is not None and "risks" in row.keys() else None
+    # 'risks' is a guaranteed column post-migrations (review I10).
+    risks_raw = row["risks"] if row is not None else None
     risks = parse_risks_from_row(risks_raw)
 
     score, components = calculate_score_from_data(dor=dor, risks=risks, config=config)
@@ -177,6 +218,7 @@ async def calculate_readiness_with_recommendations(
         score=score,
         dor_passed=dor.passed,
         dor_checks=dor.checks,
+        missing_required=sorted(dor.missing_required),
         risks=risks,
         recommendations=recs,
         explain=[c.to_dict() for c in components] if explain else None,
