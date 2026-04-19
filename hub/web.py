@@ -10,9 +10,11 @@ from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from hub import config
 from hub import db as db_module
 from hub import repository as repo
 from hub import services
+from hub.auth import current_user
 from hub.integrations.registry import plugins
 from hub.models import (
     RuntimeChoice,
@@ -28,9 +30,82 @@ from hub.models import (
 )
 
 HERE = Path(__file__).parent
-TEMPLATES = Jinja2Templates(directory=str(HERE / "templates"))
+
+
+def _user_context(request: Request) -> dict[str, Any]:
+    """Inject ``current_user`` into every Jinja template automatically."""
+    return {"current_user": getattr(request.state, "user", "anonymous")}
+
+
+TEMPLATES = Jinja2Templates(
+    directory=str(HERE / "templates"),
+    context_processors=[_user_context],
+)
 
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# Login / logout
+# ---------------------------------------------------------------------------
+
+
+def _safe_next(raw: str | None) -> str:
+    """Whitelist redirect target so /login?next=... cannot leave the host."""
+    if not raw:
+        return "/"
+    if raw.startswith("/") and not raw.startswith("//"):
+        return raw
+    return "/"
+
+
+@router.get("/login", response_class=HTMLResponse)
+async def web_login_form(
+    request: Request,
+    next: str = Query(default="/"),
+    error: str = Query(default=""),
+):
+    return TEMPLATES.TemplateResponse(
+        request,
+        "login.html",
+        {"next": _safe_next(next), "error": error},
+    )
+
+
+@router.post("/login")
+async def web_login_submit(
+    request: Request,
+    token: str = Form(...),
+    next: str = Form("/"),
+):
+    if config.HUB_AUTH_DISABLED or not config.HUB_TOKENS:
+        # Open mode — accept anything, just bounce back. Useful when admins
+        # turn auth on/off without restarting clients.
+        return RedirectResponse(_safe_next(next), status_code=303)
+    user = config.HUB_TOKENS.get(token.strip())
+    if not user:
+        return RedirectResponse(
+            f"/login?error=Invalid%20token&next={_safe_next(next)}",
+            status_code=303,
+        )
+    response = RedirectResponse(_safe_next(next), status_code=303)
+    response.set_cookie(
+        key=config.HUB_COOKIE_NAME,
+        value=token.strip(),
+        max_age=config.HUB_COOKIE_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        # secure flag is left off so the cookie works on HTTP-only deploys
+        # behind Tailscale; production deploys with TLS should set it.
+    )
+    return response
+
+
+@router.post("/logout")
+async def web_logout(request: Request):
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(config.HUB_COOKIE_NAME)
+    return response
 
 
 def _db(request: Request) -> aiosqlite.Connection:
@@ -238,6 +313,7 @@ async def web_create_task(
     scope_in: str = Form(""),
     after_create: str = Form("backlog"),
 ):
+    user = current_user(request)
     # scope_in arrives as a textarea, one item per line
     scope_in_items: list[str] = [
         line.strip() for line in scope_in.splitlines() if line.strip()
@@ -255,6 +331,7 @@ async def web_create_task(
         user_story=user_story,
         problem_statement=problem_statement,
         scope_in=scope_in_items,
+        agent=user,
     )
     created = await services.create_task(_db(request), body)
     if after_create == "refine":

@@ -39,6 +39,8 @@ from hub.models import (
     TaskUpdateView,
     TaskView,
 )
+from hub.auth import AuthMiddleware
+from hub.mcp_server import mcp as mcp_server
 from hub.services.refinement import (
     DuplicateAcceptanceCriterionError,
     TaskNotFoundError,
@@ -89,24 +91,56 @@ def _register_plugins() -> None:
         plugins.transcripts = TranscriptsIntegration()
 
 
+# MCP streamable-HTTP ASGI app. We instantiate it once at import time so it
+# can be mounted before lifespan runs; its session manager is started inside
+# our own lifespan via Starlette's lifespan_context.
+_mcp_streamable_app = mcp_server.streamable_http_app()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _register_plugins()
     app.state.db = await get_db()
     log.info("Hub database ready at %s", config.HUB_DB_PATH)
     poll_task = start_poller(app)
-    yield
-    poll_task.cancel()
-    await app.state.db.close()
+
+    # Drive the MCP session manager lifespan inside ours so /mcp/* requests
+    # have a live transport. Keeps everything in a single uvicorn process.
+    mcp_lifespan = _mcp_streamable_app.router.lifespan_context(_mcp_streamable_app)
+    try:
+        async with mcp_lifespan:
+            if config.HUB_TOKENS:
+                log.info(
+                    "Hub auth ENABLED (%d token(s) configured)",
+                    len(config.HUB_TOKENS),
+                )
+            else:
+                log.info(
+                    "Hub auth DISABLED (open mode — set OPENCLAW_HUB_TOKENS to enable)"
+                )
+            yield
+    finally:
+        poll_task.cancel()
+        await app.state.db.close()
 
 
 app = FastAPI(title="OpenClaw Hub", version="0.2.0", lifespan=lifespan)
+app.add_middleware(AuthMiddleware)
 app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
+# MCP transport for remote agents (Cursor, etc.). Bearer token enforced by
+# AuthMiddleware — see deploy/TAILSCALE.md for the client-side config.
+app.mount("/mcp", _mcp_streamable_app)
 app.include_router(web_router)
 
 
 def _db(request: Request) -> aiosqlite.Connection:
     return request.app.state.db
+
+
+@app.get("/healthz", response_class=PlainTextResponse)
+async def healthz() -> str:
+    """Liveness probe — always public, used by VPN / load balancer health checks."""
+    return "ok"
 
 
 # ---------------------------------------------------------------------------

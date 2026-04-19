@@ -30,7 +30,15 @@
             </a>
         </nav>
         <div class="sidebar-footer">
-            OpenClaw Hub v0.2
+            <div>OpenClaw Hub v0.2</div>
+            {% if current_user and current_user != 'anonymous' %}
+            <div class="sidebar-user">
+                <span class="sidebar-user-name">{{ current_user }}</span>
+                <form method="post" action="/logout" class="sidebar-user-form">
+                    <button type="submit" class="sidebar-user-logout" title="Sign out">&times;</button>
+                </form>
+            </div>
+            {% endif %}
         </div>
     </aside>
     <main class="main">
