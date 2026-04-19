@@ -1,20 +1,24 @@
 <article class="kanban-card" id="kanban-card-{{ t.id }}">
-    <a class="card-link" href="/tasks/{{ t.id }}">
-        <span class="card-id">#{{ t.id }}</span>
-        {{ t.title[:40] }}{% if t.title|length > 40 %}…{% endif %}
+    <a class="card-link" href="/tasks/{{ t.id }}" title="#{{ t.id }} {{ t.title }}">
+        <span class="card-id">#{{ t.id }}</span>{{ t.title[:48] }}{% if t.title|length > 48 %}…{% endif %}
     </a>
+    {% set _has_meta = (t.task_type.value != 'task') or (t.priority.value in ('critical', 'high')) or (t.runtime.value != 'auto') or (t.progress and t.progress.total > 0) %}
+    {% if _has_meta %}
     <div class="card-meta">
         {% if t.task_type.value != 'task' %}
-        <span class="badge badge-type-{{ t.task_type.value }}" style="font-size:9px">{{ t.task_type.value }}</span>
+        <span class="badge badge--xs badge-type-{{ t.task_type.value }}">{{ t.task_type.value }}</span>
         {% endif %}
         {% if t.priority.value in ('critical', 'high') %}
-        <span class="badge badge-priority-{{ t.priority.value }}" style="font-size:9px">{{ t.priority.value }}</span>
+        <span class="badge badge--xs badge-priority-{{ t.priority.value }}">{{ t.priority.value }}</span>
         {% endif %}
-        <span class="badge badge-{{ t.runtime.value }}" style="font-size:9px">{{ t.runtime.value }}</span>
+        {% if t.runtime.value != 'auto' %}
+        <span class="badge badge--xs badge-{{ t.runtime.value }}">{{ t.runtime.value }}</span>
+        {% endif %}
         {% if t.progress and t.progress.total > 0 %}
         <span class="card-progress-mini">{{ t.progress.percent }}%</span>
         {% endif %}
     </div>
+    {% endif %}
     {% if t.status.value == 'draft' %}
     <div class="card-actions">
         <button class="btn btn-success btn-xs"

@@ -23,7 +23,7 @@
 </header>
 
 {% if task.progress and task.progress.total > 0 %}
-<div class="progress-bar-container" style="margin-bottom:var(--sp-6)">
+<div class="progress-bar-container u-mb-6">
     <div class="progress-bar" style="width:{{ task.progress.percent }}%"></div>
     <span class="progress-label">{{ task.progress.completed }}/{{ task.progress.total }} completed ({{ task.progress.percent }}%)</span>
 </div>
@@ -65,7 +65,7 @@
             {% endif %}
             {% if task.auto_review %}
             <dt>Review</dt>
-            <dd>cycle {{ task.review_cycle }}/3 {% if task.review_job_id %}<code style="font-size:11px">{{ task.review_job_id[:16] }}…</code>{% endif %}</dd>
+            <dd>cycle {{ task.review_cycle }}/3 {% if task.review_job_id %}<code class="code-sm">{{ task.review_job_id[:16] }}…</code>{% endif %}</dd>
             {% endif %}
             {% if task.ci_fix_cycle > 0 %}
             <dt>CI Fix</dt>
@@ -80,9 +80,9 @@
 
     <div class="card">
         <div class="card-title">Description</div>
-        <div style="white-space:pre-wrap;font-size:13px;line-height:1.6">{{ task.description or 'No description' }}</div>
+        <div class="u-pre-wrap u-text-body">{{ task.description or 'No description' }}</div>
         {% if task.rationale %}
-        <div style="margin-top:var(--sp-3);font-size:12px;color:var(--text-secondary)">
+        <div class="u-text-meta">
             <strong>Rationale:</strong> {{ task.rationale }}
         </div>
         {% endif %}
@@ -123,24 +123,24 @@
 {% if task.status.value == 'draft' %}
 <div class="action-panel">
     <div class="action-panel-title">Approval Required</div>
-    <div style="display:flex;gap:var(--sp-2);flex-wrap:wrap;align-items:flex-end">
-        <form method="post" action="/tasks/{{ task.id }}/web-approve" style="display:contents">
-            <div class="form-group" style="margin-bottom:var(--sp-2)">
+    <div class="u-row-end">
+        <form method="post" action="/tasks/{{ task.id }}/web-approve" class="u-form-contents">
+            <div class="form-group u-mb-2">
                 <label>Runtime</label>
-                <select name="runtime" style="width:auto">
+                <select name="runtime" class="select--auto">
                     <option value="auto" {% if task.runtime.value == 'auto' %}selected{% endif %}>Auto</option>
                     <option value="openrouter" {% if task.runtime.value == 'openrouter' %}selected{% endif %}>OpenRouter</option>
                     <option value="vast" {% if task.runtime.value == 'vast' %}selected{% endif %}>Vast.ai</option>
                 </select>
             </div>
-            <div style="display:flex;gap:var(--sp-2)">
+            <div class="u-row-tight">
                 <button class="btn btn-success" type="submit" name="run" value="true">Approve &amp; Run</button>
                 <button class="btn btn-primary" type="submit">Approve to Backlog</button>
             </div>
         </form>
-        <form method="post" action="/tasks/{{ task.id }}/web-reject" style="display:flex;gap:var(--sp-2);align-items:flex-end">
+        <form method="post" action="/tasks/{{ task.id }}/web-reject" class="u-row-end">
             <input type="text" name="comment" placeholder="Reason (optional)"
-                   class="inbox-answer-input" style="width:200px">
+                   class="inbox-answer-input input--md">
             <button class="btn btn-danger" type="submit">Reject</button>
         </form>
     </div>
@@ -150,10 +150,10 @@
 {% if task.status.value == 'open' %}
 <div class="action-panel">
     <div class="action-panel-title">Ready to Run</div>
-    <form method="post" action="/tasks/{{ task.id }}/web-start" style="display:flex;gap:var(--sp-2);align-items:flex-end">
-        <div class="form-group" style="margin-bottom:0">
+    <form method="post" action="/tasks/{{ task.id }}/web-start" class="u-row-end">
+        <div class="form-group u-mb-0">
             <label>Runtime</label>
-            <select name="runtime" style="width:auto">
+            <select name="runtime" class="select--auto">
                 <option value="auto" {% if task.runtime.value == 'auto' %}selected{% endif %}>Auto</option>
                 <option value="openrouter" {% if task.runtime.value == 'openrouter' %}selected{% endif %}>OpenRouter</option>
                 <option value="vast" {% if task.runtime.value == 'vast' %}selected{% endif %}>Vast.ai</option>
@@ -172,17 +172,17 @@
     {% if u.kind == 'question' %}
     <div class="qa-item qa-question">
         <div class="qa-label">Question from {{ u.agent or 'Agent' }}</div>
-        <div style="white-space:pre-wrap">{{ u.content }}</div>
+        <div class="u-pre-wrap">{{ u.content }}</div>
     </div>
     {% endif %}
     {% endfor %}
     {% endif %}
-    <form method="post" action="/tasks/{{ task.id }}/web-answer" style="margin-top:var(--sp-4)">
+    <form method="post" action="/tasks/{{ task.id }}/web-answer" class="u-mt-4">
         <div class="form-group">
             <label>Your Answer</label>
-            <textarea name="answer" required placeholder="Type your answer…" style="min-height:80px"></textarea>
+            <textarea name="answer" class="textarea--md" required placeholder="Type your answer…"></textarea>
         </div>
-        <div style="display:flex;gap:var(--sp-2)">
+        <div class="u-row-tight">
             <button class="btn btn-success" type="submit" name="resume" value="true">Answer &amp; Resume</button>
             <button class="btn btn-ghost" type="submit" name="resume" value="">Answer Only</button>
         </div>
@@ -198,18 +198,18 @@
     {% if u.kind == 'arbitration' %}
     <div class="qa-item qa-arbitration">
         <div class="qa-label">Arbiter Assessment{% if u.agent %} by {{ u.agent }}{% endif %}</div>
-        <div style="white-space:pre-wrap">{{ u.content }}</div>
+        <div class="u-pre-wrap">{{ u.content }}</div>
     </div>
     {% endif %}
     {% endfor %}
     {% endif %}
-    <form method="post" action="/tasks/{{ task.id }}/web-decide" style="margin-top:var(--sp-4)">
-        <div style="display:flex;gap:var(--sp-2);flex-wrap:wrap;align-items:flex-end;margin-bottom:var(--sp-4)">
+    <form method="post" action="/tasks/{{ task.id }}/web-decide" class="u-mt-4">
+        <div class="u-row-end u-mb-4">
             <button class="btn btn-success" type="submit" name="action" value="accept">Accept as Completed</button>
         </div>
         <div class="form-group">
             <label>Instructions for rework (optional)</label>
-            <textarea name="instructions" placeholder="What specifically needs to be fixed…" style="min-height:60px"></textarea>
+            <textarea name="instructions" class="textarea--sm" placeholder="What specifically needs to be fixed…"></textarea>
         </div>
         <button class="btn btn-warning" type="submit" name="action" value="rework">Send Back for Rework</button>
     </form>
@@ -217,7 +217,7 @@
 {% endif %}
 
 <!-- Agent Updates / Q&A Thread -->
-<section class="section" style="margin-top:var(--sp-4)">
+<section class="section u-mt-4">
     <div class="section-header">
         <h2 class="section-title">Updates &amp; Q&amp;A</h2>
     </div>
@@ -228,36 +228,36 @@
             {% if u.kind == 'question' %}
             <div class="qa-item qa-question">
                 <div class="qa-label">Question from {{ u.agent or 'Agent' }} &middot; {{ u.created_at }}</div>
-                <div style="white-space:pre-wrap">{{ u.content }}</div>
+                <div class="u-pre-wrap">{{ u.content }}</div>
             </div>
             {% elif u.kind == 'answer' %}
             <div class="qa-item qa-answer">
                 <div class="qa-label">Answer &middot; {{ u.created_at }}</div>
-                <div style="white-space:pre-wrap">{{ u.content }}</div>
+                <div class="u-pre-wrap">{{ u.content }}</div>
             </div>
             {% elif u.kind == 'review' %}
             <div class="qa-item qa-review">
                 <div class="qa-label">Code Review{% if u.agent %} by {{ u.agent }}{% endif %} &middot; {{ u.created_at }}</div>
-                <div style="white-space:pre-wrap">{{ u.content }}</div>
+                <div class="u-pre-wrap">{{ u.content }}</div>
             </div>
             {% elif u.kind == 'arbitration' %}
             <div class="qa-item qa-arbitration">
                 <div class="qa-label">Arbiter Assessment{% if u.agent %} by {{ u.agent }}{% endif %} &middot; {{ u.created_at }}</div>
-                <div style="white-space:pre-wrap">{{ u.content }}</div>
+                <div class="u-pre-wrap">{{ u.content }}</div>
             </div>
             {% elif u.kind == 'alert' %}
             <div class="qa-item qa-alert">
                 <div class="qa-label">Alert{% if u.agent %} from {{ u.agent }}{% endif %} &middot; {{ u.created_at }}</div>
-                <div style="white-space:pre-wrap">{{ u.content }}</div>
+                <div class="u-pre-wrap">{{ u.content }}</div>
             </div>
             {% else %}
-            <div class="qa-item" style="background:var(--surface);border-left:3px solid var(--border)">
-                <div class="qa-label" style="color:var(--text-muted)">
+            <div class="qa-item qa-generic">
+                <div class="qa-label u-text-muted">
                     <span class="badge badge-{{ u.kind }}">{{ u.kind }}</span>
                     {% if u.agent %} {{ u.agent }} &middot; {% endif %}
                     {{ u.created_at }}
                 </div>
-                <div style="white-space:pre-wrap;margin-top:var(--sp-1)">{{ u.content }}</div>
+                <div class="u-pre-wrap u-mt-2">{{ u.content }}</div>
             </div>
             {% endif %}
             {% endfor %}
@@ -276,7 +276,7 @@
         <h2 class="section-title">Result</h2>
     </div>
     <div class="card">
-        <div style="white-space:pre-wrap;font-size:13px;line-height:1.6">{{ task.result_text }}</div>
+        <div class="u-pre-wrap u-text-body">{{ task.result_text }}</div>
     </div>
 </section>
 {% endif %}
@@ -288,7 +288,7 @@
     </div>
     <div class="log-output">{% for line in task.log_tail %}{{ line }}
 {% endfor %}</div>
-    <div style="margin-top:var(--sp-3);display:flex;gap:var(--sp-2)">
+    <div class="u-row-tight u-mt-3">
         {% if task.job_id %}
         <a href="/tasks/{{ task.id }}/log?job=main" class="btn btn-ghost btn-sm">View full dispatch log</a>
         {% endif %}
@@ -302,7 +302,7 @@
     <div class="section-header">
         <h2 class="section-title">Logs</h2>
     </div>
-    <div style="display:flex;gap:var(--sp-2)">
+    <div class="u-row-tight">
         {% if task.job_id %}
         <a href="/tasks/{{ task.id }}/log?job=main" class="btn btn-ghost btn-sm">View full dispatch log</a>
         {% endif %}

@@ -9,7 +9,7 @@
 </header>
 
 {% if parent_breadcrumb %}
-<nav class="breadcrumb" style="margin-bottom:var(--sp-4)">
+<nav class="breadcrumb u-mb-4">
     <a href="/tasks">All Tasks</a>
     <span class="breadcrumb-sep">&#8250;</span>
     {% for crumb in parent_breadcrumb %}
@@ -52,12 +52,13 @@
     <div class="filter-group">
         <label>Parent</label>
         <input type="number" name="parent_id" placeholder="ID"
+               class="input--sm"
                value="{{ filter_parent_id or '' }}"
                hx-get="/tasks/list" hx-target="#task-table-wrap" hx-swap="innerHTML" hx-include=".filter-bar [name]"
                hx-trigger="change, keyup changed delay:500ms"
-               style="width:80px" min="1">
+               min="1">
     </div>
-    <div class="filter-group" style="align-self:flex-end">
+    <div class="filter-group filter-group--end">
         <a href="/tasks" class="btn btn-ghost btn-sm">Reset</a>
     </div>
 </div>

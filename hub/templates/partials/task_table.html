@@ -24,10 +24,10 @@
                 {% if t.parent_id %}
                 <a href="/tasks/{{ t.parent_id }}">#{{ t.parent_id }}</a>
                 {% else %}
-                <span style="color:var(--text-muted)">—</span>
+                <span class="u-text-muted">—</span>
                 {% endif %}
             </td>
-            <td style="white-space:nowrap">{{ t.created_at[:10] if t.created_at else '' }}</td>
+            <td class="u-nowrap">{{ t.created_at[:10] if t.created_at else '' }}</td>
             <td>
                 {% if t.status.value == 'draft' %}
                 <button class="btn btn-success btn-xs"

@@ -18,9 +18,9 @@
     <div class="epic-children">
         {% for child in e.children[:5] %}
         <a href="/tasks/{{ child.id }}" class="epic-child-link">
-            <span class="badge badge-type-{{ child.task_type.value }}" style="font-size:9px">{{ child.task_type.value[:3] }}</span>
-            {{ child.title[:40] }}{% if child.title|length > 40 %}…{% endif %}
-            <span class="badge badge-{{ child.status.value }}" style="font-size:9px">{{ child.status.value }}</span>
+            <span class="badge badge--xs badge-type-{{ child.task_type.value }}">{{ child.task_type.value[:3] }}</span>
+            <span class="epic-child-title">{{ child.title[:48] }}{% if child.title|length > 48 %}…{% endif %}</span>
+            <span class="badge badge--xs badge-{{ child.status.value }}">{{ child.status.value }}</span>
         </a>
         {% endfor %}
         {% if e.children|length > 5 %}

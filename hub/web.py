@@ -24,6 +24,7 @@ from hub.models import (
     TaskStart,
     TaskStatus,
     TaskType,
+    WorkType,
 )
 
 HERE = Path(__file__).parent
@@ -231,7 +232,17 @@ async def web_create_task(
     task_type: str = Form("task"),
     parent_id: int | None = Form(None),
     priority: str = Form("medium"),
+    work_type: str = Form("feature"),
+    user_story: str = Form(""),
+    problem_statement: str = Form(""),
+    scope_in: str = Form(""),
+    after_create: str = Form("backlog"),
 ):
+    # scope_in arrives as a textarea, one item per line
+    scope_in_items: list[str] = [
+        line.strip() for line in scope_in.splitlines() if line.strip()
+    ]
+
     body = TaskCreate(
         title=title,
         description=description,
@@ -240,8 +251,14 @@ async def web_create_task(
         task_type=TaskType(task_type),
         parent_id=parent_id,
         priority=priority,
+        work_type=WorkType(work_type) if task_type == "task" else WorkType.feature,
+        user_story=user_story,
+        problem_statement=problem_statement,
+        scope_in=scope_in_items,
     )
-    await services.create_task(_db(request), body)
+    created = await services.create_task(_db(request), body)
+    if after_create == "refine":
+        return RedirectResponse(f"/tasks/{created.id}", status_code=303)
     return RedirectResponse("/tasks", status_code=303)
 
 
